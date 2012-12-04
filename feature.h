@@ -28,10 +28,12 @@ class feature
         bool low_innovation_inlier;
         bool high_innovation_inlier;
 
-        cv::Mat h;
-        cv::Mat z;
+        cv::Mat h; //predicted measurement
+        cv::Mat z; //latest measurement
         cv::Mat H;
         cv::Mat S;
+
+        cv::Mat h2; //for ransac hypothesis
 
         int state_size; //seems unnecessary
         int measurement_size; //seems unnecessary

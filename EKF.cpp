@@ -55,7 +55,7 @@ EKF::~EKF()
 void EKF::deleteFeatures()
 {
     //TODO: would be better to go backwards for speed. Also, clean up the ugliness
-    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); )
+    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ) //note, no ++it on purpose here
     {
         int position = 13;
         if ((it->measured < 0.5*it->predicted) && (it->predicted > 5))
@@ -84,8 +84,8 @@ void EKF::deleteFeatures()
                 vconcat(newp1.rowRange(Range(0,position)),newp1.rowRange(Range(position + fsize, xsize)),newp );
             }
 
-            x_k_k = newx.clone();
-            p_k_k = newp.clone();
+            newx.copyTo(x_k_k);
+            newp.copyTo(p_k_k);
 
             it = features_info.erase(it);
         }
@@ -120,6 +120,7 @@ void EKF::addAndUpdateFeatures(Mat & frame)
         it->z.release();
         it->H.release();
         it->S.release();
+        it->h2.release(); // required for ransac hypothesis
 
     }
 
@@ -141,19 +142,41 @@ void EKF::addAndUpdateFeatures(Mat & frame)
         Mat searchBox(frame, Rect(x,y,60,40) );
         //extract FAST corners here
         vector<KeyPoint> result;
-        FAST(searchBox, result, 20, true);
+        FAST(searchBox, result, 40, true);
 
-        //TODO: use cornerSubPix to get better initial estimates??!
-
-        Point2d FASTresult;
+        Point2f FASTresult;
 
         if (result.size() > 0)
         {
             success = true;
 
-            //sort on restult[x].response to find strongest corner?? or already done?
-            FASTresult.x = result[0].pt.x + x;
-            FASTresult.y = result[0].pt.y + y;
+            int maxResponse = 0;
+            int maxIdx = 0;
+            for (int sre = 0; sre < result.size(); sre++)
+            {
+                if (result[sre].response > maxResponse)
+                {
+                    maxResponse = result[sre].response;
+                    maxIdx = sre;
+                }
+            }
+
+            FASTresult.x = result[maxIdx].pt.x + x;
+            FASTresult.y = result[maxIdx].pt.y + y;
+
+            vector<Point2f> resultVector;
+            resultVector.push_back(FASTresult);
+
+            //use cornerSubPix to get better initial estimates
+            // Set the needed parameters to find the refined corners
+            Size winSize = Size( 5, 5 );
+            Size zeroZone = Size( -1, -1 );
+            TermCriteria criteria = TermCriteria( CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 20, 0.01 );
+
+            // Calculate the refined corner locations
+            cornerSubPix( frame, resultVector, winSize, zeroZone, criteria );
+
+            FASTresult = resultVector[0];
 
             //check if feature is far enough away from existing features (either same box or minimum distance)
             int position = 13;
@@ -168,15 +191,21 @@ void EKF::addAndUpdateFeatures(Mat & frame)
                 //in fact, we may also compare with last measured position in case of slow movements; may be faster
 
                 Mat hrl;
+                vector<Point2f> projectedLocation;
 
                 if (it->cartesian)
                 {
                     Mat yi = x_k_k.colRange(position, position + 3);
                     Mat r_cw;
-                    invert(rotMat, r_cw);  // its possible to check return value if necessary; also, can we directly use it in projectPoints?
+                    invert(rotMat, r_cw);  /// its possible to check return value if necessary; also, can we directly use it in projectPoints?
                     hrl = r_cw * (yi.t() - t_wc.t()); //this should give point in camera coordinates.. does it?
 
                     position = position + 3;
+
+                    Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F);
+                    vector<Point3f> coordinates;
+                    coordinates.push_back(Point3f(hrl.at<double>(0),hrl.at<double>(1),hrl.at<double>(2) ));
+                    projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation);
                 }
                 else
                 {
@@ -187,23 +216,15 @@ void EKF::addAndUpdateFeatures(Mat & frame)
                     Mat mi = (Mat_<double>(3,1) << cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
                     hrl = rotMat.t() * ( (yi.t() - t_wc.t() )*rho + mi );
 
-                    position = position + 6;
+                    position = position + 6;  ///TODO: check how we can make this prettier; rotation is 0 in the beginning,
+                                                ///gotta change that if we want to test this..
+                    Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F);
+                    vector<Point3f> coordinates;
+                    coordinates.push_back(Point3f(hrl.at<double>(0),hrl.at<double>(1),hrl.at<double>(2) ));
+                    projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation);
                 }
 
-
-
-                Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F);
-                vector<Point2d> projectedLocation;
-                vector<Point3d> coordinates;
-                coordinates.push_back(Point3d(hrl.at<double>(0,0),hrl.at<double>(1,0),hrl.at<double>(2,0) ));
-
-                std::cout << coordinates << std::endl;
-
-                projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation);
-
-                //projectedLocation[0].x; //+= 320; //because projectPoints assumes (0,0) straight ahead // hrm, not?
-                //projectedLocation[0].y;// += 240;         //probably something is going wrong...
-                Point2d location(projectedLocation[0]);
+                Point2f location(projectedLocation[0]);
 
                 std::cout << location << std::endl;
 
@@ -214,8 +235,6 @@ void EKF::addAndUpdateFeatures(Mat & frame)
                 }
 
             }
-
-
             //perhaps use projectPoints here, after having collected the points 3d coordinates (is likely slower though)
         }
 
@@ -309,10 +328,18 @@ void EKF::addAndUpdateFeatures(Mat & frame)
             features_info.push_back(newFeatureInfo);
 
             initialized++;
+
+
+            //lets check results after first init here
+            //std::cout << x_k_k << std::endl;
+            //std::cout << p_k_k << std::endl;
+            std::cout << FASTresult << undistorted[0] << std::endl;
+
+           // exit(1);
         }
 
     }
-
+    exit(1);
 }
 
 void EKF::dRq_times_a_by_dq(const Mat & quat, const Mat & n, Mat & res)
@@ -654,7 +681,7 @@ void EKF::searchICmatches(Mat & frame)
 
         if ( hrl.at<double>(0,3) > 0 ) //should also be in front of camera
         {
-            //TODO: probably its important that they also are within column / row range; skipped that so far, so add that after all!
+            ///TODO: probably its important that they also are within column / row range; skipped that so far, so add that after all!
             location.copyTo(it->h);
 
             //also calculate derivative H  ( = dh/dx|predictedstate )   2xn matrix cause h returns x and y coordinates
@@ -757,6 +784,7 @@ void EKF::searchICmatches(Mat & frame)
     //warp patches according to predicted motion (predict_features_appearance)
 ///TODO
 
+
     //Find correspondences in the search regions using normalized cross-correlation
     double correlation_threshold = 0.8;
     double chi_095_2 = 5.9915;
@@ -766,18 +794,532 @@ void EKF::searchICmatches(Mat & frame)
         if (it->h.empty()) continue; //apparently, this feature was not predicted
 
         Scalar TSS = trace(it->S), DSS = determinant(it->S);
-        double TS = TSS.val[0]; double DS = DSS.val[0]; double underroot = TS*TS/4 - DS;
+        double TS = TSS.val[0];
+        double DS = DSS.val[0];
+        double underroot = TS*TS/4 - DS;
         if (underroot < 0) continue; //something is very wrong in that case
 
-        double EigS1 = TS / 2 + sqrt(underroot); double EigS2 = TS / 2 - sqrt(underroot);
+        double EigS1 = TS / 2 + sqrt(underroot);
+        double EigS2 = TS / 2 - sqrt(underroot);
 
-        if (EigS1 > 100 || EigS2 > 100) continue; //do not search if ellipse is too big
+///(this catches everything? s/t wrong there!!)
+        //if ((EigS1 > 100) || (EigS2 > 100)) continue; //do not search if ellipse is too big
+
+        Mat invS;
+        invert(it->S, invS);
 
         //everything OK, lets search!
 
+        ///TODO we can do much better here by searching only in 95% region, as in matlab; for now, I simply used openCV template matching
+        ///over a rectangle
+        /// and of course used warped patch instead of patch stored in beginning
 
+        Mat patch_when_matching = it->patch_when_initialized.rowRange(Range(14,26)).colRange(Range(14,26));
+        patch_when_matching.copyTo(it->patch_when_matching); //make matching patch small (to be removed eventually)
+
+        double half_search_region_size_x = ceil(2*sqrt(it->S.at<double>(0,0)));
+        double half_search_region_size_y = ceil(2*sqrt(it->S.at<double>(1,1)));
+
+        int xmin = it->h.at<double>(0) - half_search_region_size_x - it->half_patch_size_when_matching;
+        int xmax = it->h.at<double>(0) + half_search_region_size_x + it->half_patch_size_when_matching;
+        int ymin = it->h.at<double>(1) - half_search_region_size_y - it->half_patch_size_when_matching;
+        int ymax = it->h.at<double>(1) + half_search_region_size_y + it->half_patch_size_when_matching;
+
+        if (xmin < 0) xmin = 0; //check if we're not going over border
+        if (ymin < 0) ymin = 0;
+        if (xmax >= frame.cols) xmax = frame.cols - 1;
+        if (ymax >= frame.rows) ymax = frame.rows - 1;
+
+        if ((ymax - ymin < patch_when_matching.rows) || (xmax - xmin < patch_when_matching.cols) ) continue; //search area is not big enough, because feature is near edge
+
+        Mat searchArea = frame(Rect(xmin, ymin, xmax - xmin, ymax - ymin));
+        Mat result( searchArea.cols - patch_when_matching.cols + 1, searchArea.rows - patch_when_matching.rows + 1, CV_32FC1);
+        matchTemplate( searchArea, patch_when_matching, result, 3 ); //3 for normalized crosscorrelation //ekfmonoslam might use 5 instead?!
+        normalize( result, result, 0, 1, NORM_MINMAX, -1, Mat() ); //this okay?
+
+        double minVal;
+        double maxVal;
+        Point minLoc;
+        Point maxLoc;
+        minMaxLoc( result, &minVal, &maxVal, &minLoc, &maxLoc, Mat() );
+        double maximum_correlation = maxVal;
+
+        if (maximum_correlation > correlation_threshold)
+        {
+            it->individually_compatible = true;
+            Mat z = (Mat_<double>(2,1) << maxLoc.x + xmin, maxLoc.y + ymin); //this going allright?
+            z.copyTo(it->z); //new positions
+        }
 
     }
 
 }
 
+void EKF::ransacHypotheses()
+{
+
+    double p_at_least_one_spurious_free = 0.99;
+    double threshold = sigma_image_noise;
+    int hyp_iterations = 1000; // max number of iterations
+    //int n_hyp = 1000;  // initial value for early stopping, will be updated
+    int max_hypothesis_support = -1; // will be updated
+
+    int num_IC_matches = 0;
+    vector<int> IC_matches;
+    for(int i = 0; i < features_info.size(); i++)
+    {
+        if (features_info[i].individually_compatible)
+        {
+            num_IC_matches++;
+            IC_matches.push_back(i);
+        }
+    }
+
+    if (num_IC_matches == 0) exit(5); //make a good exit strategy here! this situation can happen, dont want program to crash then
+
+    for (int i = 1; i <= hyp_iterations; i++) //matlab loop works different from c loop; no stopping condition in matlab
+    {
+        //select a random match
+        int pos = (rand() % num_IC_matches);
+        int randposition = IC_matches[pos];
+
+        //1 match EKF state update
+        Mat zi = features_info[randposition].z;
+        Mat hi = features_info[randposition].h;
+        Mat Hi = features_info[randposition].H;
+
+        Mat S = Hi*p_k_km1*Hi.t() + features_info[randposition].R;
+        Mat invS;
+        invert(S, invS);
+        Mat K1 = p_k_km1*Hi.t()*invS;
+
+        Mat xi = x_k_km1.t() + K1*(zi - hi ) ; //xi has wrong orientation now
+
+        //compute hypothesis support (using commented method in matlab as "compute hypothesis support fast" is heavy on matlab stuff)
+        //first, use xi for predicting camera measurements (done 2x before using different state vector) and store in h2
+        int position = 13;
+        Mat t_wc = xi.rowRange(Range(0, 3));  //t_wc
+        Mat quat = xi.rowRange(Range(3,7));
+        Mat rotMat = quaternion2rotmatrix(quat); //r_wc
+
+        for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
+        {
+            //possible improvement; we dont have to predict all points, only those that have been measured
+            Mat hrl;
+            Mat yi;
+            Mat distvect;
+
+            if (it->cartesian)
+            {
+                yi = xi.rowRange(Range(position, position + 3));
+                Mat r_cw;
+                invert(rotMat, r_cw);  // its possible to check return value if necessary; also, can we directly use it in projectPoints?
+                distvect = yi - t_wc;
+                hrl = r_cw * distvect; //this should give point in camera coordinates.. does it?
+
+                position = position + 3;
+            }
+            else
+            {
+                yi = xi.rowRange(Range(position, position + 3));
+                double rho = xi.at<double>(position + 5);
+                double theta = xi.at<double>(position + 3);
+                double phi = xi.at<double>(position + 4);
+                Mat mi = (Mat_<double>(3,1) << cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
+                distvect = (yi - t_wc )*rho + mi;
+                hrl = rotMat.t() * distvect;
+
+                position = position + 6;
+            }
+
+            Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F);
+            vector<Point2d> projectedLocation;
+            vector<Point3d> coordinates;
+            coordinates.push_back(Point3d(hrl.at<double>(0),hrl.at<double>(1),hrl.at<double>(2) ));
+
+            projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation); //project this point
+            //and store it in h2
+            Mat location = (Mat_<double>(2,1) << projectedLocation[0].x , projectedLocation[0].y );
+            location.copyTo(it->h2);
+
+        }
+
+        //then calculate support for this hypothesis, based on predicted measurements h2 and actual measurements z
+        int hyp_support = 0;
+        vector <int> inliers;
+        for(int j = 0; j < features_info.size(); j++)
+        {
+            if (features_info[j].z.empty()) continue;
+            double nu1 = features_info[j].z.at<double>(0) - features_info[j].h2.at<double>(0);
+            double nu2 = features_info[j].z.at<double>(1) - features_info[j].h2.at<double>(1);
+            if ( sqrt(nu1*nu1 + nu2*nu2) < threshold )
+            {
+                hyp_support++;
+                inliers.push_back(j);
+            }
+        }
+
+        if (hyp_support > max_hypothesis_support)
+        {
+            max_hypothesis_support = hyp_support;
+
+            //kind if ugly way to "set as most supported hypothesis"
+            for(int j = 0; j < features_info.size(); j++)
+            {
+                features_info[j].low_innovation_inlier = false;
+            }
+            for(int j = 0; j < inliers.size(); j++)
+            {
+                features_info[inliers[j]].low_innovation_inlier = true;
+            }
+
+            float epsilon = 1-(hyp_support/num_IC_matches);
+
+            //this is what matlab code does; not sure if it is intended though... what is the rationale?
+            if (ceil(log(1-p_at_least_one_spurious_free)/log(1-(1-epsilon))) == 0) break;
+        }
+    }
+}
+
+void EKF::updateLIInliers()  //calculate new x_k_k and p_k_k
+{
+    Mat zlist, hlist, Hlist;
+
+    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
+    {
+        if ( ! it->low_innovation_inlier) continue;
+
+        if (zlist.empty())
+        {
+            it->H.copyTo(Hlist);
+            it->z.copyTo(zlist); //
+            it->h.copyTo(hlist); //are those two right orientation? should be column vector; we'll see if it goes allright later
+        }
+        else
+        {
+            vconcat(Hlist, it->H, Hlist);
+            vconcat(hlist, it->h, hlist);
+            vconcat(zlist, it->z, zlist);
+        }
+    }
+
+    if (zlist.empty()) //in case we dont have inliers at all (first frames perhaps? does this happen at all?)
+    {
+        x_k_k = x_k_km1;
+        p_k_k = p_k_km1;
+        return;
+    }
+
+
+    Mat R = Mat::eye(zlist.rows , zlist.rows , CV_64F );
+
+    //now do the actual update
+
+    Mat S = Hlist*p_k_km1*Hlist.t() + R;  //gain
+    Mat invS;
+    invert(S,invS);
+    Mat K1 = p_k_km1 * Hlist.t() * invS;    // the filters K is not actually updated here (correct?)
+
+    Mat tmp = K1 * (zlist - hlist); //update state and covariance
+    x_k_k = x_k_km1 + tmp.t(); //cause my x_k_k is row instead of column...
+    p_k_k = p_k_km1 - K1 * S * K1.t();
+    p_k_k = 0.5 * p_k_k + 0.5 * p_k_k.t();
+    //commented out in matlab code:  p_k_k = ( speye(size(p_km1_k,1)) - K*H )*p_km1_k;  //why is it there?
+
+    //normalize quaternion (is it necessary to do this every step?)
+    double r = x_k_k.at<double>(3), x = x_k_k.at<double>(4), y = x_k_k.at<double>(5), z = x_k_k.at<double>(6);
+    double prod = r*r+x*x+y*y+z*z;
+    Mat Jnorm = 1/ (prod*sqrt(prod)) * (Mat_<double>(4,4) << x*x+y*y+z*z, -r*x, -r*y, -r*z, -x*r, r*r+y*y+z*z, -x*y, -x*z,
+                                        -y*r, -y*x, r*r+x*x+z*z, -y*z, -z*r, -z*x, -z*y, r*r+x*x+y*y);
+
+    Mat quat = x_k_k.colRange(Range(3,7));
+    Mat newquat = quat / norm(quat);
+    newquat.copyTo(quat);
+
+    int end = x_k_k.cols - 7;
+    Mat pkk1 = p_k_k(Rect(3,0,4,3));
+    tmp = pkk1 * Jnorm.t();
+    tmp.copyTo(pkk1);
+    Mat pkk2 = p_k_k(Rect(0,3,3,4));
+    tmp = Jnorm * pkk2;
+    tmp.copyTo(pkk2);
+    Mat pkk3 = p_k_k(Rect(3,3,4,4));
+    tmp = Jnorm * pkk3 * Jnorm.t();
+    tmp.copyTo(pkk3);
+    Mat pkk4 = p_k_k(Rect(3,7,4,end));
+    tmp = pkk4 * Jnorm.t();
+    tmp.copyTo(pkk4);
+    Mat pkk5 = p_k_k(Rect(7,3,end,4));
+    tmp = Jnorm * pkk5;
+    tmp.copyTo(pkk5); //should be done now..
+
+}
+
+void EKF::rescueHIInliers()
+{
+    //first the couple from hell: predict_camera_measurements and calculate_derivatives (4th time doing this stuff; put in seperate function)
+
+    int position = 13;
+    Mat t_wc = x_k_k.colRange(Range(0, 3));  //t_wc
+    Mat quat = x_k_k.colRange(Range(3,7));
+    Mat rotMat = quaternion2rotmatrix(quat); //r_wc
+
+    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
+    {
+        if ( ! it->individually_compatible || it->low_innovation_inlier ) continue;
+
+        Mat hrl;
+        Mat yi;
+        Mat distvect;
+
+        if (it->cartesian)
+        {
+            yi = x_k_k.colRange(position, position + 3);
+            Mat r_cw;
+            invert(rotMat, r_cw);  // its possible to check return value if necessary; also, can we directly use it in projectPoints?
+            distvect = yi.t() - t_wc.t();
+            hrl = r_cw * distvect; //this should give point in camera coordinates.. does it?
+
+            position = position + 3;
+        }
+        else
+        {
+            yi = x_k_k.colRange(position, position + 3);     //actually, if i remember correctly
+            double rho = x_k_k.at<double>(0,position + 5);   //this x_k_km1 stuff, the features..
+            double theta = x_k_k.at<double>(0,position + 3); //are the same as in x_k_k (thus no need to copy?)
+            double phi = x_k_k.at<double>(0,position + 4);
+            Mat mi = (Mat_<double>(3,1) << cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
+            distvect = (yi.t() - t_wc.t() )*rho + mi;
+            hrl = rotMat.t() * distvect;
+
+            position = position + 6;
+        }
+
+        Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F);
+        vector<Point2d> projectedLocation;
+        vector<Point3d> coordinates;
+        coordinates.push_back(Point3d(hrl.at<double>(0),hrl.at<double>(1),hrl.at<double>(2) ));
+
+        projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation);
+
+        //projectedLocation[0].x; //+= 320; //because projectPoints assumes (0,0) straight ahead // hrm, not?
+        //projectedLocation[0].y;// += 240;         //probably something is going wrong...
+
+        Mat location = (Mat_<double>(2,1) << projectedLocation[0].x , projectedLocation[0].y );
+
+
+        ///TODO: probably its important that they also are within column / row range; skipped that so far, so add that after all!
+        location.copyTo(it->h);
+
+        //also calculate derivative H  ( = dh/dx|predictedstate )   2xn matrix cause h returns x and y coordinates
+
+        Mat Hi;
+
+        double fku = K.at<double>(0,0), fkv = K.at<double>(1,1);
+        double hrlx = hrl.at<double>(0), hrly = hrl.at<double>(1), hrlz = hrl.at<double>(2);
+        Mat dhu_dhrl = (Mat_<double>(2,3) << fku/hrlz, 0 , -hrlx*fku / (hrlz*hrlz), 0, fkv/hrlz, -hrly*fkv/(hrlz*hrlz) );
+
+        Mat invdhd_dhu = Mat::zeros(2,2,CV_64F), dhd_dhu = Mat::zeros(2,2,CV_64F);
+        Point2d loc;
+        loc.x = location.at<double>(0);
+        loc.y = location.at<double>(1);
+        jacob_undistor_fm( loc , invdhd_dhu);
+        invert(invdhd_dhu, dhd_dhu); //is this actuallt the same as what we calculated before in function jacob_babla ? dont think so..
+
+        Mat dh_dhrl = dhd_dhu * dhu_dhrl; //add distortion derivative
+
+        Mat dqbar_by_dq = (Mat_<double>(4,4) << 1,0,0,0, 0,-1,0,0, 0,0,-1,0, 0,0,0,-1);
+        Mat dRqabydq;
+        Mat quatconj = -quat; //is this allright? not changing original etc..?
+        quatconj.at<double>(0) = quat.at<double>(0);
+        dRq_times_a_by_dq(quatconj, distvect, dRqabydq ); //second argument should be column vector
+        Mat dhrl_dqwr = dRqabydq * dqbar_by_dq;
+        Mat dh_dqwr = dh_dhrl * dhrl_dqwr;
+
+        if (it->cartesian)  //now parametrization specific stuff
+        {
+
+            Mat dhrl_dy;
+            invert(rotMat, dhrl_dy); //calculated before but not stored (r_cw)
+            Mat dhrl_drw = -dhrl_dy;
+
+            Mat dh_drw = dh_dhrl * dhrl_drw;
+
+            Mat dh_dxv = dh_drw;
+            hconcat(dh_dxv, dh_dqwr, dh_dxv);
+            hconcat(dh_dxv, Mat::zeros(2,6,CV_64F), dh_dxv);
+            Mat dh_dy = dh_dhrl * dhrl_dy;
+
+            Hi = dh_dxv;
+            if (position - 3 - 13 > 0)  //amount of zeros to be added before
+                hconcat(Hi, Mat::zeros(2, position - 3 - 13, CV_64F), Hi);
+
+            hconcat(Hi, dh_dy, Hi);
+
+            if (p_k_k.size().width - Hi.size().width > 0) //amount of zeros to be added after
+                hconcat(Hi, Mat::zeros(2, p_k_k.size().width - Hi.size().width, CV_64F), Hi);
+        }
+        else
+        {
+            double lambda = x_k_k.at<double>(position - 1);  //different parametrization here, is that right?
+            double phi = x_k_k.at<double>(position - 2);
+            double theta = x_k_k.at<double>(position - 3);
+
+            Mat Rrw;
+            invert(rotMat, Rrw);
+            Mat dhrl_drw = Rrw * -lambda;
+
+            Mat dhrl_dy = lambda * Rrw;
+            Mat dmi1 = (Mat_<double>(3,1) << cos(phi)*cos(theta), 0, -cos(phi)*sin(theta) ); //column vector!
+            Mat dmi_dthetai = Rrw * dmi1;
+            hconcat(dhrl_dy, dmi_dthetai, dhrl_dy);
+            Mat dmi2 = (Mat_<double>(3,1) << -sin(phi)*sin(theta), -cos(phi), -sin(phi)*cos(theta) ); //column vector!
+            Mat dmi_dphii = Rrw * dmi2;
+            hconcat(dhrl_dy, dmi_dphii, dhrl_dy);
+            Mat lastpart = Rrw * (yi.t() - t_wc.t() );
+            hconcat(dhrl_dy, lastpart, dhrl_dy);
+            //dhrl_dy finished
+
+            Mat dh_drw = dh_dhrl * dhrl_drw;
+
+            Mat dh_dxv = dh_drw;
+            hconcat(dh_dxv, dh_dqwr, dh_dxv);
+            hconcat(dh_dxv, Mat::zeros(2,6,CV_64F), dh_dxv);
+            Mat dh_dy = dh_dhrl * dhrl_dy;
+
+            Hi = dh_dxv;
+            if (position - 6 - 13 > 0)  //amount of zeros to be added before
+                hconcat(Hi, Mat::zeros(2, position - 6 - 13, CV_64F), Hi);
+
+            hconcat(Hi, dh_dy, Hi);
+
+            if (p_k_k.size().width - Hi.size().width > 0) //amount of zeros to be added after
+                hconcat(Hi, Mat::zeros(2, p_k_k.size().width - Hi.size().width, CV_64F), Hi);
+
+        }
+
+        Hi.copyTo(it->H);
+        //finally, H calculated
+
+        //now check if this feature is in fact a high innovation inlier
+        Mat Si = it->H * p_k_k * it->H.t();
+        Mat invSi;
+        invert(Si, invSi);
+        Mat nui = it->z - it->h;
+        Mat p = nui.t() * invSi * nui;
+        if (p.at<double>(0) < 5.9915)
+            it->high_innovation_inlier = true;
+        else
+            it->high_innovation_inlier = false;
+    }
+
+}
+
+void EKF::updateHIInliers()  //this function is identical to the LI inliers, apart from the if ( ! it->high_innovation_inlier) continue;
+{
+    //lets just make it one function with a parameter to set if it is low or high innovation inliers that we do...
+    Mat zlist, hlist, Hlist;
+
+    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
+    {
+        if ( ! it->high_innovation_inlier) continue;
+
+        if (zlist.empty())
+        {
+            it->H.copyTo(Hlist);
+            it->z.copyTo(zlist); //
+            it->h.copyTo(hlist); //are those two right orientation? should be column vector; we'll see if it goes allright later
+        }
+        else
+        {
+            vconcat(Hlist, it->H, Hlist);
+            vconcat(hlist, it->h, hlist);
+            vconcat(zlist, it->z, zlist);
+        }
+    }
+
+    if (zlist.empty()) //in case we dont have inliers at all (first frames perhaps? does this happen at all?)
+    {
+        x_k_k = x_k_km1;
+        p_k_k = p_k_km1;
+        return;
+    }
+
+
+    Mat R = Mat::eye(zlist.rows , zlist.rows , CV_64F );
+
+    //now do the actual update
+
+    Mat S = Hlist*p_k_km1*Hlist.t() + R;  //gain
+    Mat invS;
+    invert(S,invS);
+    Mat K1 = p_k_km1 * Hlist.t() * invS;    // the filters K is not actually updated here (correct?)
+
+    Mat tmp = K1 * (zlist - hlist); //update state and covariance
+    x_k_k = x_k_km1 + tmp.t(); //cause my x_k_k is row instead of column...
+    p_k_k = p_k_km1 - K1 * S * K1.t();
+    p_k_k = 0.5 * p_k_k + 0.5 * p_k_k.t();
+    //commented out in matlab code:  p_k_k = ( speye(size(p_km1_k,1)) - K*H )*p_km1_k;  //why is it there?
+
+    //normalize quaternion (is it necessary to do this every step?)
+    double r = x_k_k.at<double>(3), x = x_k_k.at<double>(4), y = x_k_k.at<double>(5), z = x_k_k.at<double>(6);
+    double prod = r*r+x*x+y*y+z*z;
+    Mat Jnorm = 1/ (prod*sqrt(prod)) * (Mat_<double>(4,4) << x*x+y*y+z*z, -r*x, -r*y, -r*z, -x*r, r*r+y*y+z*z, -x*y, -x*z,
+                                        -y*r, -y*x, r*r+x*x+z*z, -y*z, -z*r, -z*x, -z*y, r*r+x*x+y*y);
+
+    Mat quat = x_k_k.colRange(Range(3,7));
+    Mat newquat = quat / norm(quat);
+    newquat.copyTo(quat);
+
+    int end = x_k_k.cols - 7;
+    Mat pkk1 = p_k_k(Rect(3,0,4,3));
+    tmp = pkk1 * Jnorm.t();
+    tmp.copyTo(pkk1);
+    Mat pkk2 = p_k_k(Rect(0,3,3,4));
+    tmp = Jnorm * pkk2;
+    tmp.copyTo(pkk2);
+    Mat pkk3 = p_k_k(Rect(3,3,4,4));
+    tmp = Jnorm * pkk3 * Jnorm.t();
+    tmp.copyTo(pkk3);
+    Mat pkk4 = p_k_k(Rect(3,7,4,end));
+    tmp = pkk4 * Jnorm.t();
+    tmp.copyTo(pkk4);
+    Mat pkk5 = p_k_k(Rect(7,3,end,4));
+    tmp = Jnorm * pkk5;
+    tmp.copyTo(pkk5); //should be done now..
+}
+
+void EKF::visualize(Mat & frameGray, char * fps)
+{
+
+    //full disclosure here..
+    std::cout << "step " << step << std::endl;
+    //std::cout << "xkk " << x_k_k << std::endl;
+
+
+
+    Mat outFrame;
+
+    cvtColor(frameGray, outFrame, CV_GRAY2BGR);
+
+    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
+    {
+        if (it->z.empty()) continue;
+        Point2f p;
+        p.x = it->z.at<double>(0);
+        p.y = it->z.at<double>(1);
+        putText(outFrame, "*", p, FONT_HERSHEY_SIMPLEX, 1, Scalar(0,0,255,255)); //put FPS text
+
+        p.x = it->h.at<double>(0);
+        p.y = it->h.at<double>(1);
+        putText(outFrame, "O", p, FONT_HERSHEY_SIMPLEX, 1, Scalar(255,255,255,255)); //put FPS text
+
+
+    }
+
+    putText(outFrame, fps, Point(10, 30), FONT_HERSHEY_SIMPLEX, 1, Scalar(0,0,255,255)); //put FPS text
+
+    imshow("det", outFrame);
+
+
+}

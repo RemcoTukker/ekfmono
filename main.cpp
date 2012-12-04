@@ -3,6 +3,7 @@
 #include <time.h>
 #include <opencv2/opencv.hpp>
 #include <vector>
+#include <string>
 
 #include "EKF.h"
 #include "feature.h"
@@ -16,21 +17,27 @@ int main()
     //this should work but most of the time gives segfaults now (re-install opencv with ffmpeg properly)
     //VideoCapture cap("http://10.10.1.157:8080/videofeed"); // open ip camera
 
-    VideoCapture cap(0);  //to test with local camera
+    //VideoCapture cap(0);  //to test with local camera
 
-    if(!cap.isOpened())  // check if we succeeded
-    {
-        cout << "Camera init failed!" << endl;
-        return -1;
-    }
+    //if(!cap.isOpened())  // check if we succeeded
+    //{
+    //    cout << "Camera init failed!" << endl;
+    //    return -1;
+    //}
+
+    //to test with sequence
 
     // get a new frame from camera and store it as first reference point
     Mat frame;
     Mat frameGray, oldGray;
-    cap >> frame;
-    int width = frame.size().width;
-    int height = frame.size().height;
-    cvtColor(frame, frameGray, CV_BGR2GRAY);
+
+    //cap >> frame;
+    //cvtColor(frame, frameGray, CV_BGR2GRAY);
+    string base = "seq/rawoutput";
+    frameGray = imread("seq/rawoutput0000.pgm",0);
+
+    int width = frameGray.size().width;
+    int height = frameGray.size().height;
     frameGray.copyTo(oldGray);
 
     //set some variables for fps count
@@ -46,10 +53,9 @@ int main()
 
     EKF filter;
 
-    namedWindow("detect",1);
-
     //start main loop
-    for(;;)
+    //for(;;)
+    for(int i = 0; i< 60;i++)
     {
         fps++;
         if (time(NULL) != previousTime)
@@ -68,19 +74,27 @@ int main()
         swap(frameGray, oldGray); // swap previous frame to oldGray to make place for new frame
 
         //get a new frame
-        cap >> frame;
-        cvtColor(frame, frameGray, CV_BGR2GRAY);
-
+        //cap >> frame;
+        //cvtColor(frame, frameGray, CV_BGR2GRAY);
+        char numstr[5]; // enough to hold all numbers up to 64-bits
+        sprintf(numstr, "%04d", i);
+        string result = base + numstr + ".pgm";
+        frameGray = imread(result,0);
 
         filter.searchICmatches(frameGray);
-
-
+        filter.ransacHypotheses();
+        filter.updateLIInliers();
+        filter.rescueHIInliers();
+        filter.updateHIInliers();
+        filter.visualize(frameGray, fpsbuffer);
 
         // to create an FPS meter
-        putText(frame, fpsbuffer, Point(10, 30), FONT_HERSHEY_SIMPLEX, 1, Scalar(0,0,255,255)); //put FPS text
+        //frameGray.copyTo(frame);
+
+        //putText(frame, fpsbuffer, Point(10, 30), FONT_HERSHEY_SIMPLEX, 1, Scalar(0,0,255,255)); //put FPS text
 
         //give output
-        imshow("detect", frame);
+        //imshow("detect", frame);
 
         if(waitKey(30) >= 0) break;
     }

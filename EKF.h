@@ -15,6 +15,11 @@ class EKF
         void mapManagement(Mat & frame);
         void ekfPrediction();
         void searchICmatches(Mat & frame);
+        void ransacHypotheses();
+        void updateLIInliers();
+        void rescueHIInliers();
+        void updateHIInliers();
+        void visualize(Mat & frameGray, char * fps);
     protected:
 
     private:
