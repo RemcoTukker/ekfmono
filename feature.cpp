@@ -10,7 +10,8 @@ feature::feature(cv::Point2d & uv, cv::Mat & x1to7, cv::Mat & patch, int step, c
     half_patch_size_when_initialized = 20;
     half_patch_size_when_matching = 6;
 
-    //predicted, measured stay 0
+    predicted = 0;
+    measured = 0;
 
     init_frame = step;
     init_measurement = uv;

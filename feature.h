@@ -22,6 +22,8 @@ class feature
         int init_frame;
         cv::Point2d init_measurement; //same as uv_when_initialized? (only one is column vector, other one is row vector in matlab)
 
+        cv::Rect lastSearchArea;
+
         bool cartesian;
         cv::Mat yi; // this is the 6-d feature as it is appended to the x-vector (why necessary?)
         bool individually_compatible;

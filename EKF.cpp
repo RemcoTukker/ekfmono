@@ -1,25 +1,32 @@
 #include "EKF.h"
+#include "time.h"
 
 using namespace cv;
 
 EKF::EKF() //ctor
 {
-    min_number_of_features_in_image = 25;
+    min_number_of_features_in_image = 20;
 
     sigma_a = 0.007;
     sigma_alpha = 0.007;
     sigma_image_noise = 1.0;
 
-    double eps = .00000000001;
+    double eps = .000001;
 
     //init cam
-    double Kdata[] = {640/(2*tan(60*3.14/360)) ,0, 640/2,  0, 640/(2*tan(60*3.14/360)), 480/2,  0,0,1}; //is this OK? esp. focal lengths..
+    //double Kdata[] = {640/(2*tan(60*3.14/360)) ,0, 640/2,  0, 640/(2*tan(60*3.14/360)), 480/2,  0,0,1}; //is this OK? esp. focal lengths..
+    double Kdata[] = {2.1735 / 0.0112, 0, 1.7945 / 0.0112,  0, 2.1735 / 0.0112, 1.4433 / 0.0112,  0,0,1}; //for test...
     K = Mat(3,3,CV_64F, Kdata).clone();  //fix this better! find out theory and so on...
-    distCoef = (Mat_<double>(1, 4) <<  0.06333, 0.0139, 0, 0); //TODO get better distortion coefficients!
+    distCoef = (Mat_<double>(1, 4) <<  -0.13, -0.06,0,0); //this is close enough for unibrain fire-i (test sequence)
+    //distCoef = (Mat_<double>(1, 4) <<  0.06333, 0.0139, 0, 0); //TODO get better distortion coefficients!
+
+    nRows = 240;
+    nCols = 320;
 
     //init state
 
     double xdata[] = {0,0,0, 1,0,0,0, 0,0,0, eps,eps,eps};
+    //double xdata[] = {1,2,3, 0.6830127018922194,0.6830127018922194,-0.06162841671621935,0.70441602640275, 0,0,0, eps,eps,eps};
     x_k_k = Mat(1,13,CV_64F, xdata).clone();
 
     //init covariance matrix
@@ -45,21 +52,31 @@ EKF::EKF() //ctor
 
     step = 1;
 
+    logfile.open ("/dev/null/log.txt");
+    //logfile.open ("log.txt");
+    time_t rawtime;
+    time(&rawtime);
+    logfile << asctime(localtime(&rawtime));
+
 }
 
 EKF::~EKF()
 {
-    //dtor
+    logfile.close();
 }
 
-void EKF::deleteFeatures()
+void EKF::deleteFeatures() //seems to be working now..
 {
+    //std::cout << "current number of features: "<< features_info.size() << std::endl;
     //TODO: would be better to go backwards for speed. Also, clean up the ugliness
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ) //note, no ++it on purpose here
     {
         int position = 13;
         if ((it->measured < 0.5*it->predicted) && (it->predicted > 5))
         {
+            //std::cout << " deleting feature " << it - features_info.begin() << std::endl;
+            //std::cout << "deleting feature..." << std::endl;
+            //std::cout << "predicted: " << it->predicted << " times and measured " << it->measured << " times" << std::endl;
             int fsize;
             if (it->cartesian)
                 fsize = 3;
@@ -98,9 +115,11 @@ void EKF::deleteFeatures()
             ++it;
         }
     }
+    //std::cout << features_info.size() << std::endl;
+
 }
 
-void EKF::addAndUpdateFeatures(Mat & frame)
+void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 {
     int measuredFeatures = 0;
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
@@ -129,6 +148,8 @@ void EKF::addAndUpdateFeatures(Mat & frame)
     //start adding new features
     int max_attempts = 50;
     int initialized = 0, attempts = 0;
+
+    //note: this will initialize features even if features_info already has too many features in it, iff they are not measured this step
     while ((initialized + measuredFeatures < min_number_of_features_in_image) && ( attempts < max_attempts ))
     {
         attempts++;
@@ -164,19 +185,19 @@ void EKF::addAndUpdateFeatures(Mat & frame)
             FASTresult.x = result[maxIdx].pt.x + x;
             FASTresult.y = result[maxIdx].pt.y + y;
 
-            vector<Point2f> resultVector;
-            resultVector.push_back(FASTresult);
+       //     vector<Point2f> resultVector;
+       //     resultVector.push_back(FASTresult);
 
             //use cornerSubPix to get better initial estimates
             // Set the needed parameters to find the refined corners
-            Size winSize = Size( 5, 5 );
-            Size zeroZone = Size( -1, -1 );
-            TermCriteria criteria = TermCriteria( CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 20, 0.01 );
+       //     Size winSize = Size( 5, 5 );
+       //     Size zeroZone = Size( -1, -1 );
+       //     TermCriteria criteria = TermCriteria( CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 20, 0.01 );
 
             // Calculate the refined corner locations
-            cornerSubPix( frame, resultVector, winSize, zeroZone, criteria );
+       //     cornerSubPix( frame, resultVector, winSize, zeroZone, criteria );
 
-            FASTresult = resultVector[0];
+       //     FASTresult = resultVector[0];
 
             //check if feature is far enough away from existing features (either same box or minimum distance)
             int position = 13;
@@ -226,7 +247,7 @@ void EKF::addAndUpdateFeatures(Mat & frame)
 
                 Point2f location(projectedLocation[0]);
 
-                std::cout << location << std::endl;
+                //std::cout << location << std::endl;
 
                 if ( (norm(location - FASTresult) < 20) && (hrl.at<double>(0,3) > 0) ) //should also be in front of camera
                 {
@@ -333,18 +354,25 @@ void EKF::addAndUpdateFeatures(Mat & frame)
             //lets check results after first init here
             //std::cout << x_k_k << std::endl;
             //std::cout << p_k_k << std::endl;
-            std::cout << FASTresult << undistorted[0] << std::endl;
+            //std::cout << "added feature at " << FASTresult << " , undistorted "<< undistorted[0] << std::endl;
+            logfile << "added feature at " << FASTresult << " , undistorted "<< undistorted[0] << std::endl;
 
            // exit(1);
         }
 
     }
-    exit(1);
+
+    //std::cout << x_k_k << std::endl;
+    //std::cout << p_k_k << std::endl;
+    logfile << std::endl << "xkk after adding features " << x_k_k << std::endl ;
+    logfile << std::endl << "pkk after adding features " << p_k_k << std::endl;
+
 }
 
 void EKF::dRq_times_a_by_dq(const Mat & quat, const Mat & n, Mat & res)
 {
-    double q0 = quat.at<double>(0), qx = 2*quat.at<double>(1), qy = 2*quat.at<double>(2), qz = 2*quat.at<double>(3);
+
+    double q0 = 2*quat.at<double>(0), qx = 2*quat.at<double>(1), qy = 2*quat.at<double>(2), qz = 2*quat.at<double>(3);
     Mat dRbydq0 = (Mat_<double>(3, 3) << q0, -qz, qy,   qz, q0, -qx,   -qy, qx, q0 );
     Mat dRbydqx = (Mat_<double>(3, 3) << qx, qy, qz,   qy, -qx, -q0,   qz, q0, -qx );
     Mat dRbydqy = (Mat_<double>(3, 3) << -qy, qx, q0,   qx, qy, qz,   -q0, qz, -qy );
@@ -354,16 +382,18 @@ void EKF::dRq_times_a_by_dq(const Mat & quat, const Mat & n, Mat & res)
     hconcat(res, dRbydqx * n, res);
     hconcat(res, dRbydqy * n, res);
     hconcat(res, dRbydqz * n, res);  //now it should be a 3 row 4 column matrix
+
 }
 
-void EKF::jacob_undistor_fm(Point2d coor, Mat & res)
-{
+void EKF::jacob_undistor_fm(Point2d coor, Mat & res)  //code is good, however, we may want to find better values for d / K
+{                                                       //(they probably dont match with projectPoints function; try to get jacobians from that function itself)
     //undistortion Jacobian stuff (Real-Time 3D SLAM with Wide-Angle Vision, Andrew J. Davison, Yolanda Gonzalez Cid and Nobuyuki Kita, IAV 2004.)
-    double d = 0.0056;  //this d is probably wildly inaccurate!!!!  Also, different dx and dy might be good!
+    double d = 0.0112;  //this d is probably wildly inaccurate!!!!  Also, different dx and dy might be good!
     double xd = (coor.x - K.at<double>(0,2)) * d;
     double yd = (coor.y - K.at<double>(1,2)) * d;
     double rd2 = xd*xd+yd*yd, rd4 = rd2 * rd2;
-    double k1 = distCoef.at<double>(0,0), k2 = distCoef.at<double>(0,1);
+    //double k1 = distCoef.at<double>(0), k2 = distCoef.at<double>(1);
+    double k1 = 0.06333, k2 = 0.0139;
     res.at<double>(0,0) = (1 + k1*rd2 + k2*rd4) + (coor.x - K.at<double>(0,2)) * (k1 + 2*k2*rd2) * (2*(coor.x - K.at<double>(0,2))*d*d);
     res.at<double>(1,1) = (1 + k1*rd2 + k2*rd4) + (coor.y - K.at<double>(1,2)) * (k1 + 2*k2*rd2) * (2*(coor.y - K.at<double>(1,2))*d*d);
     res.at<double>(0,1) = (coor.x - K.at<double>(0,2)) * (k1 + 2*k2*rd2) * (2*(coor.y - K.at<double>(1,2))*d*d);
@@ -429,9 +459,11 @@ void EKF::convertToCartesian()
 
         float linearity_index = 4 * std_d * cos_alpha / d_c2p;
 
+        //std::cout << linearity_index << std::endl;
+
         if (linearity_index < linearity_index_threshold)  //convert to cartesion
         {
-
+            std::cout << " converting feature " << it - features_info.begin() << " to cartesian!" << std::endl;
             //change x_k_k
             Mat newx1, newx2;
             int xsize = x_k_k.size().width;
@@ -486,8 +518,9 @@ Mat EKF::quaternion2rotmatrix(Mat & quat)  //only works on <double> Mat
     return res;
 }
 
-void EKF::ekfPrediction() //here, fill the m1 copies of p_k_k and x_k_k (the predictions)
+void EKF::ekfPrediction() //here, fill the m1 copies of p_k_k and x_k_k (the predictions)  //works perfectly now
 {
+
     float delta_t = 1;
     //camera motion prediction (constant velocity model for now)
     Mat rW = x_k_k.colRange(Range(0,3));
@@ -541,8 +574,8 @@ void EKF::ekfPrediction() //here, fill the m1 copies of p_k_k and x_k_k (the pre
     Pn.at<double>(1,1) = linear;
     Pn.at<double>(2,2) = linear;
     Pn.at<double>(3,3) = angular;
-    Pn.at<double>(3,3) = angular;
-    Pn.at<double>(3,3) = angular;
+    Pn.at<double>(4,4) = angular;
+    Pn.at<double>(5,5) = angular;
 
     //calculate Q
     Mat G = Mat::zeros(13,6,CV_64F); //hey! dimensions turned around here or down there? argh! (height width here)
@@ -568,10 +601,14 @@ void EKF::ekfPrediction() //here, fill the m1 copies of p_k_k and x_k_k (the pre
         vconcat(p_k_km1, bottom, p_k_km1); //done!
     }
 
+    logfile << std::endl << "xkkm1 " << x_k_km1 << std::endl;
+    logfile << std::endl << "pkkm1 "<< p_k_km1 << std::endl;
+
 }
 
-void EKF::dqomegadtbydomega(const Mat & wW, const double delta_t, Mat & res)
+void EKF::dqomegadtbydomega(const Mat & wW, const double delta_t, Mat & res) //works perfectly
 {
+
     double omegamod = norm(wW);
     res = Mat::zeros(4,3,CV_64F);
     res.at<double>(0,0) = dq0_by_domegaA(wW.at<double>(0), omegamod, delta_t);
@@ -606,7 +643,7 @@ double EKF::dqA_by_domegaB(double omegaA, double omegaB, double omega, double de
 }
 
 void EKF::multiplyQuaternion(const Mat& q1,const Mat& q2, Mat& q) //only works on <double> Mat
-{
+{ //does what it is supposed to do (in ekfprediction at least)
     // First quaternion q1 (x1 y1 z1 r1)
     const double x1=q1.at<double>(1);
     const double y1=q1.at<double>(2);
@@ -626,8 +663,8 @@ void EKF::multiplyQuaternion(const Mat& q1,const Mat& q2, Mat& q) //only works o
     q.at<double>(0)=r1*r2 - x1*x2 - y1*y2 - z1*z2;   // r component
 }
 
-void EKF::searchICmatches(Mat & frame)
-{
+void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedepth works!
+{                               //predicting location seems to work (not tested with cartesian coordinates yet though)
 
     //predict feature locations (note, we did this before while adding features!
     //however, we now use EKF prediction to calculate predicted points instead of actual points;
@@ -664,6 +701,9 @@ void EKF::searchICmatches(Mat & frame)
             distvect = (yi.t() - t_wc.t() )*rho + mi;
             hrl = rotMat.t() * distvect;
 
+            //std::cout << " feature " << it - features_info.begin() << " coordinates (calc from inv depth) " << hrl << std::endl;
+            logfile << std::endl << " feature " << it - features_info.begin() << " coordinates (calc from inv depth) " << hrl << std::endl;
+
             position = position + 6;
         }
 
@@ -679,9 +719,16 @@ void EKF::searchICmatches(Mat & frame)
 
         Mat location = (Mat_<double>(2,1) << projectedLocation[0].x , projectedLocation[0].y );
 
-        if ( hrl.at<double>(0,3) > 0 ) //should also be in front of camera
+        //std::cout << location << std::endl;
+        logfile << std::endl << "predicted location " << location << std::endl;
+
+        if ( ( hrl.at<double>(0,3) > 0 ) && (projectedLocation[0].x > 0) && (projectedLocation[0].x < nCols)
+                && (projectedLocation[0].y > 0) && (projectedLocation[0].y < nRows) )
+        //should also be in front of camera and within column / row range
         {
-            ///TODO: probably its important that they also are within column / row range; skipped that so far, so add that after all!
+            //std::cout << " feature " << it - features_info.begin() << " predicted at " << location << std::endl;
+            //std::cout << " feature " << std::endl;
+
             location.copyTo(it->h);
 
             //also calculate derivative H  ( = dh/dx|predictedstate )   2xn matrix cause h returns x and y coordinates
@@ -689,8 +736,16 @@ void EKF::searchICmatches(Mat & frame)
             Mat Hi;
 
             double fku = K.at<double>(0,0), fkv = K.at<double>(1,1);
-            double hrlx = hrl.at<double>(0), hrly = hrl.at<double>(1), hrlz = hrl.at<double>(2);
+            //double hrlx = hrl.at<double>(0), hrly = hrl.at<double>(1), hrlz = hrl.at<double>(2);
+            Mat Rrw;
+            invert(rotMat, Rrw); //careful! we calculated this before, not stored
+            Mat hc = Rrw * distvect;
+            double hrlx = hc.at<double>(0), hrly = hc.at<double>(1), hrlz = hc.at<double>(2);
             Mat dhu_dhrl = (Mat_<double>(2,3) << fku/hrlz, 0 , -hrlx*fku / (hrlz*hrlz), 0, fkv/hrlz, -hrly*fkv/(hrlz*hrlz) );
+            logfile << std::endl << "dhu_dhrl " << dhu_dhrl << std::endl;
+
+            //std::cout << dhu_dhrl << std::endl; //this one is about double //not anymore
+            //std::cout << K << std::endl;
 
             Mat invdhd_dhu = Mat::zeros(2,2,CV_64F), dhd_dhu = Mat::zeros(2,2,CV_64F);
             Point2d loc;
@@ -698,6 +753,8 @@ void EKF::searchICmatches(Mat & frame)
             loc.y = location.at<double>(1);
             jacob_undistor_fm( loc , invdhd_dhu);
             invert(invdhd_dhu, dhd_dhu); //is this actuallt the same as what we calculated before in function jacob_babla ? dont think so..
+            logfile << std::endl << "invdhd_dhu " << invdhd_dhu << std::endl;
+            //std::cout << dhd_dhu << std::endl; //this one is ok i guess
 
             Mat dh_dhrl = dhd_dhu * dhu_dhrl; //add distortion derivative
 
@@ -707,6 +764,7 @@ void EKF::searchICmatches(Mat & frame)
             quatconj.at<double>(0) = quat.at<double>(0);
             dRq_times_a_by_dq(quatconj, distvect, dRqabydq ); //second argument should be column vector
             Mat dhrl_dqwr = dRqabydq * dqbar_by_dq;
+            logfile << std::endl << "dhrl_dqwr "<< dhrl_dqwr << std::endl;
             Mat dh_dqwr = dh_dhrl * dhrl_dqwr;
 
             if (it->cartesian)  //now parametrization specific stuff
@@ -751,6 +809,8 @@ void EKF::searchICmatches(Mat & frame)
                 hconcat(dhrl_dy, dmi_dphii, dhrl_dy);
                 Mat lastpart = Rrw * (yi.t() - t_wc.t() );
                 hconcat(dhrl_dy, lastpart, dhrl_dy);
+
+                logfile << std::endl << dhrl_dy << std::endl;
                 //dhrl_dy finished
 
                 Mat dh_drw = dh_dhrl * dhrl_drw;
@@ -772,14 +832,18 @@ void EKF::searchICmatches(Mat & frame)
             }
 
             Hi.copyTo(it->H);
+            logfile << "H " << Hi << std::endl;
             //finally, H calculated
 
             //now also calculate S
             Mat Si = Hi * p_k_km1 * Hi.t() + it->R;
             Si.copyTo(it->S);
+            logfile << "S " << Si << std::endl;
+
         }
 
     }
+
 
     //warp patches according to predicted motion (predict_features_appearance)
 ///TODO
@@ -802,8 +866,14 @@ void EKF::searchICmatches(Mat & frame)
         double EigS1 = TS / 2 + sqrt(underroot);
         double EigS2 = TS / 2 - sqrt(underroot);
 
-///(this catches everything? s/t wrong there!!)
-        //if ((EigS1 > 100) || (EigS2 > 100)) continue; //do not search if ellipse is too big
+        //note, this is higher than in matlab because it depends on amount of pixels
+        if ((EigS1 > 300) && (EigS2 > 300))
+        {
+
+            std::cout << " uncertainty too large: " << EigS1 << " " << EigS2 << std::endl;
+            continue; //do not search if ellipse is too big
+        }
+
 
         Mat invS;
         invert(it->S, invS);
@@ -833,6 +903,8 @@ void EKF::searchICmatches(Mat & frame)
         if ((ymax - ymin < patch_when_matching.rows) || (xmax - xmin < patch_when_matching.cols) ) continue; //search area is not big enough, because feature is near edge
 
         Mat searchArea = frame(Rect(xmin, ymin, xmax - xmin, ymax - ymin));
+        it->lastSearchArea = Rect(xmin, ymin, xmax - xmin, ymax - ymin);
+
         Mat result( searchArea.cols - patch_when_matching.cols + 1, searchArea.rows - patch_when_matching.rows + 1, CV_32FC1);
         matchTemplate( searchArea, patch_when_matching, result, 3 ); //3 for normalized crosscorrelation //ekfmonoslam might use 5 instead?!
         normalize( result, result, 0, 1, NORM_MINMAX, -1, Mat() ); //this okay?
@@ -846,9 +918,15 @@ void EKF::searchICmatches(Mat & frame)
 
         if (maximum_correlation > correlation_threshold)
         {
+
+
             it->individually_compatible = true;
-            Mat z = (Mat_<double>(2,1) << maxLoc.x + xmin, maxLoc.y + ymin); //this going allright?
+            Mat z = (Mat_<double>(2,1) << maxLoc.x + xmin + 6, maxLoc.y + ymin + 6); //this going allright?
+                                                //6 is half the size of the patch
             z.copyTo(it->z); //new positions
+
+           //std::cout << "match found at " << z << std::endl;
+           logfile << " feature " << it - features_info.begin() << " found at " << z << std::endl;
         }
 
     }
@@ -961,6 +1039,7 @@ void EKF::ransacHypotheses()
 
         if (hyp_support > max_hypothesis_support)
         {
+            //std::cout << "new max hypothesis" << std::endl;
             max_hypothesis_support = hyp_support;
 
             //kind if ugly way to "set as most supported hypothesis"
@@ -976,18 +1055,43 @@ void EKF::ransacHypotheses()
             float epsilon = 1-(hyp_support/num_IC_matches);
 
             //this is what matlab code does; not sure if it is intended though... what is the rationale?
-            if (ceil(log(1-p_at_least_one_spurious_free)/log(1-(1-epsilon))) == 0) break;
+            if (ceil(log(1-p_at_least_one_spurious_free)/log(1-(1-epsilon))) == 0) //it doesnt always do this. (mostly not, same in Matlab)
+            {/*
+                std::cout << "hypothesis accepted with the following predictions: " << std::endl;
+                for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
+                {
+                    std::cout << " feature " << it - features_info.begin() << " predicted at " << it->h2;
+                    if (!it->z.empty())
+                    {
+                        std::cout << " , measured " << it->z;
+                        std::cout << (it->low_innovation_inlier ? " LI inlier": " HI inlier") << std::endl;
+                    }
+                    else
+                    {
+                        std::cout << " not measured " << std::endl;
+                    }
+
+                }*/
+
+                break;
+            }
+
         }
     }
 }
 
-void EKF::updateLIInliers()  //calculate new x_k_k and p_k_k
+void EKF::updateLIInliers()  //calculate new x_k_k and p_k_k // works as intended
 {
     Mat zlist, hlist, Hlist;
 
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
-        if ( ! it->low_innovation_inlier) continue;
+        if ( ! it->low_innovation_inlier)
+        {
+            logfile << " feature " << it - features_info.begin() << " is not a LI inlier" << std::endl;
+            continue;
+        }
+        logfile << " feature " << it - features_info.begin() << " is a LI inlier" << std::endl;
 
         if (zlist.empty())
         {
@@ -1010,7 +1114,6 @@ void EKF::updateLIInliers()  //calculate new x_k_k and p_k_k
         return;
     }
 
-
     Mat R = Mat::eye(zlist.rows , zlist.rows , CV_64F );
 
     //now do the actual update
@@ -1024,7 +1127,7 @@ void EKF::updateLIInliers()  //calculate new x_k_k and p_k_k
     x_k_k = x_k_km1 + tmp.t(); //cause my x_k_k is row instead of column...
     p_k_k = p_k_km1 - K1 * S * K1.t();
     p_k_k = 0.5 * p_k_k + 0.5 * p_k_k.t();
-    //commented out in matlab code:  p_k_k = ( speye(size(p_km1_k,1)) - K*H )*p_km1_k;  //why is it there?
+    //commented out in matlab code: p_k_k = ( speye(size(p_km1_k,1)) - K*H )*p_km1_k;  //why is it there?
 
     //normalize quaternion (is it necessary to do this every step?)
     double r = x_k_k.at<double>(3), x = x_k_k.at<double>(4), y = x_k_k.at<double>(5), z = x_k_k.at<double>(6);
@@ -1053,6 +1156,9 @@ void EKF::updateLIInliers()  //calculate new x_k_k and p_k_k
     tmp = Jnorm * pkk5;
     tmp.copyTo(pkk5); //should be done now..
 
+    logfile << "xkk after RANSAC LI update " << x_k_k << std::endl;
+    logfile << "pkk after RANSAC LI update " << p_k_k << std::endl;
+
 }
 
 void EKF::rescueHIInliers()
@@ -1066,7 +1172,7 @@ void EKF::rescueHIInliers()
 
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
-        if ( ! it->individually_compatible || it->low_innovation_inlier ) continue;
+        if ( (! it->individually_compatible) || it->low_innovation_inlier ) continue;
 
         Mat hrl;
         Mat yi;
@@ -1102,21 +1208,23 @@ void EKF::rescueHIInliers()
 
         projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation);
 
-        //projectedLocation[0].x; //+= 320; //because projectPoints assumes (0,0) straight ahead // hrm, not?
-        //projectedLocation[0].y;// += 240;         //probably something is going wrong...
-
         Mat location = (Mat_<double>(2,1) << projectedLocation[0].x , projectedLocation[0].y );
 
 
-        ///TODO: probably its important that they also are within column / row range; skipped that so far, so add that after all!
+        // ? TODO: probably its important that they also are within column / row range; skipped that so far, so add that after all!
         location.copyTo(it->h);
 
         //also calculate derivative H  ( = dh/dx|predictedstate )   2xn matrix cause h returns x and y coordinates
 
         Mat Hi;
 
+
         double fku = K.at<double>(0,0), fkv = K.at<double>(1,1);
-        double hrlx = hrl.at<double>(0), hrly = hrl.at<double>(1), hrlz = hrl.at<double>(2);
+        Mat Rrw;
+        invert(rotMat, Rrw); //careful! we calculated this before, not stored
+        Mat hc = Rrw * distvect;
+        double hrlx = hc.at<double>(0), hrly = hc.at<double>(1), hrlz = hc.at<double>(2);
+        //double hrlx = hrl.at<double>(0), hrly = hrl.at<double>(1), hrlz = hrl.at<double>(2); //fixed mistake here too
         Mat dhu_dhrl = (Mat_<double>(2,3) << fku/hrlz, 0 , -hrlx*fku / (hrlz*hrlz), 0, fkv/hrlz, -hrly*fkv/(hrlz*hrlz) );
 
         Mat invdhd_dhu = Mat::zeros(2,2,CV_64F), dhd_dhu = Mat::zeros(2,2,CV_64F);
@@ -1207,6 +1315,7 @@ void EKF::rescueHIInliers()
         invert(Si, invSi);
         Mat nui = it->z - it->h;
         Mat p = nui.t() * invSi * nui;
+
         if (p.at<double>(0) < 5.9915)
             it->high_innovation_inlier = true;
         else
@@ -1216,7 +1325,8 @@ void EKF::rescueHIInliers()
 }
 
 void EKF::updateHIInliers()  //this function is identical to the LI inliers, apart from the if ( ! it->high_innovation_inlier) continue;
-{
+{                               //NB: and also apart from that this one works on x_k_k and p_k_k instead of x_k_km1 and p_k_km1 !!!
+                            //should work as intended!
     //lets just make it one function with a parameter to set if it is low or high innovation inliers that we do...
     Mat zlist, hlist, Hlist;
 
@@ -1240,8 +1350,9 @@ void EKF::updateHIInliers()  //this function is identical to the LI inliers, apa
 
     if (zlist.empty()) //in case we dont have inliers at all (first frames perhaps? does this happen at all?)
     {
-        x_k_k = x_k_km1;
-        p_k_k = p_k_km1;
+        //do nothing!
+        //x_k_k = x_k_km1;
+        //p_k_k = p_k_km1;
         return;
     }
 
@@ -1250,18 +1361,17 @@ void EKF::updateHIInliers()  //this function is identical to the LI inliers, apa
 
     //now do the actual update
 
-    Mat S = Hlist*p_k_km1*Hlist.t() + R;  //gain
+    Mat S = Hlist*p_k_k*Hlist.t() + R;  //gain
     Mat invS;
     invert(S,invS);
-    Mat K1 = p_k_km1 * Hlist.t() * invS;    // the filters K is not actually updated here (correct?)
-
+    Mat K1 = p_k_k * Hlist.t() * invS;    // the filters K is not actually updated here
     Mat tmp = K1 * (zlist - hlist); //update state and covariance
-    x_k_k = x_k_km1 + tmp.t(); //cause my x_k_k is row instead of column...
-    p_k_k = p_k_km1 - K1 * S * K1.t();
+    x_k_k = x_k_k + tmp.t(); //cause my x_k_k is row instead of column...
+    p_k_k = p_k_k - K1 * S * K1.t();
     p_k_k = 0.5 * p_k_k + 0.5 * p_k_k.t();
     //commented out in matlab code:  p_k_k = ( speye(size(p_km1_k,1)) - K*H )*p_km1_k;  //why is it there?
 
-    //normalize quaternion (is it necessary to do this every step?)
+    //normalize quaternion (is it necessary to do this every step?) (twice in every step even?)
     double r = x_k_k.at<double>(3), x = x_k_k.at<double>(4), y = x_k_k.at<double>(5), z = x_k_k.at<double>(6);
     double prod = r*r+x*x+y*y+z*z;
     Mat Jnorm = 1/ (prod*sqrt(prod)) * (Mat_<double>(4,4) << x*x+y*y+z*z, -r*x, -r*y, -r*z, -x*r, r*r+y*y+z*z, -x*y, -x*z,
@@ -1294,9 +1404,25 @@ void EKF::visualize(Mat & frameGray, char * fps)
 
     //full disclosure here..
     std::cout << "step " << step << std::endl;
-    //std::cout << "xkk " << x_k_k << std::endl;
+    std::cout << "xkk " << x_k_k.colRange(Range(0,13)) << std::endl;
 
+    Point3d pathpoint(x_k_k.at<double>(0),x_k_k.at<double>(1),x_k_k.at<double>(2));
+    path.push_back(pathpoint);
+    Mat figure1 = Mat::zeros(300,300, CV_8U);
+    Mat figure2 = Mat::zeros(300,300, CV_8U);
+    Point2d lastPoint1(150,150),lastPoint2(150,150);
+    for (int i = 0; i < path.size(); i++)
+    {
+        Point2d thisPoint1(path[i].x * 150 + 150,path[i].y * 150 + 150);
+        line(figure1, lastPoint1, thisPoint1, Scalar(255,255,255,255));
+        lastPoint1 = thisPoint1;
 
+        Point2d thisPoint2(path[i].x * 150 + 150,path[i].z * 150 + 150);
+        line(figure2, lastPoint2, thisPoint2, Scalar(255,255,255,255));
+        lastPoint2 = thisPoint2;
+    }
+    imshow("top view", figure1);
+    imshow("back view", figure2);
 
     Mat outFrame;
 
@@ -1305,15 +1431,20 @@ void EKF::visualize(Mat & frameGray, char * fps)
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
         if (it->z.empty()) continue;
+
+        Scalar color = Scalar(0,255,0,255);
+        if (it->low_innovation_inlier) color = Scalar(0,0,255,255);
+
         Point2f p;
         p.x = it->z.at<double>(0);
         p.y = it->z.at<double>(1);
-        putText(outFrame, "*", p, FONT_HERSHEY_SIMPLEX, 1, Scalar(0,0,255,255)); //put FPS text
+        putText(outFrame, "*", p, FONT_HERSHEY_SIMPLEX, 1, color); //put FPS text
 
         p.x = it->h.at<double>(0);
         p.y = it->h.at<double>(1);
-        putText(outFrame, "O", p, FONT_HERSHEY_SIMPLEX, 1, Scalar(255,255,255,255)); //put FPS text
+        putText(outFrame, "O", p, FONT_HERSHEY_SIMPLEX, 1, Scalar(255,0,0,255)); //put FPS text
 
+        rectangle(outFrame, it->lastSearchArea, Scalar(255,255,255,255) );
 
     }
 

@@ -17,11 +17,11 @@ int main()
     //this should work but most of the time gives segfaults now (re-install opencv with ffmpeg properly)
     //VideoCapture cap("http://10.10.1.157:8080/videofeed"); // open ip camera
 
-    //VideoCapture cap(0);  //to test with local camera
+    //VideoCapture cap(1);  //to test with local camera
 
     //if(!cap.isOpened())  // check if we succeeded
     //{
-    //    cout << "Camera init failed!" << endl;
+    //   cout << "Camera init failed!" << endl;
     //    return -1;
     //}
 
@@ -33,8 +33,8 @@ int main()
 
     //cap >> frame;
     //cvtColor(frame, frameGray, CV_BGR2GRAY);
-    string base = "seq/rawoutput";
-    frameGray = imread("seq/rawoutput0000.pgm",0);
+    string base = "/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput";
+    frameGray = imread("/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput0000.pgm",0);
 
     int width = frameGray.size().width;
     int height = frameGray.size().height;
@@ -55,7 +55,7 @@ int main()
 
     //start main loop
     //for(;;)
-    for(int i = 0; i< 60;i++)
+    for(int i = 0; i< 200;i++)
     {
         fps++;
         if (time(NULL) != previousTime)
@@ -97,9 +97,12 @@ int main()
         //imshow("detect", frame);
 
         if(waitKey(30) >= 0) break;
+        //sleep(1);
+
     }
     // the camera will be deinitialized automatically in VideoCapture destructor
 
+    //sleep(100);
 
     return 0;
 }

@@ -1,9 +1,12 @@
 #ifndef EKF_H
 #define EKF_H
 
+#include <fstream>
+#include <iostream>
 #include <opencv2/opencv.hpp>
 #include <vector>
 #include "feature.h"
+
 
 using namespace cv;
 
@@ -50,12 +53,17 @@ class EKF
 
         Mat K;
         Mat distCoef;
+        int nRows, nCols;
         //Mat measurements;
         //Mat predictedMeasurements;
 
         double sigma_a;
         double sigma_alpha;
         double sigma_image_noise;
+
+        vector<Point3f> path;
+
+        std::ofstream logfile;
 
 };
 
