@@ -5,7 +5,7 @@ using namespace cv;
 
 EKF::EKF() //ctor
 {
-    min_number_of_features_in_image = 20;
+    min_number_of_features_in_image = 25;
 
     sigma_a = 0.007;
     sigma_alpha = 0.007;
@@ -67,7 +67,7 @@ EKF::~EKF()
 
 void EKF::deleteFeatures() //seems to be working now..
 {
-    //std::cout << "current number of features: "<< features_info.size() << std::endl;
+    logfile << "current number of features: "<< features_info.size() << std::endl;
     //TODO: would be better to go backwards for speed. Also, clean up the ugliness
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ) //note, no ++it on purpose here
     {
@@ -79,9 +79,16 @@ void EKF::deleteFeatures() //seems to be working now..
             //std::cout << "predicted: " << it->predicted << " times and measured " << it->measured << " times" << std::endl;
             int fsize;
             if (it->cartesian)
+            {
                 fsize = 3;
+                logfile << "deleting cartesian feature! nr "<< it - features_info.begin() << std::endl;
+            }
             else
+            {
                 fsize = 6;
+                logfile << "deleting inverse depth feature! nr " << it - features_info.begin()<< std::endl;
+            }
+
 
             int xsize = x_k_k.size().width;
             Mat newx, newp;
@@ -109,13 +116,13 @@ void EKF::deleteFeatures() //seems to be working now..
         else
         {
             if (it->cartesian)
-                position = position + 6;
-            else
                 position = position + 3;
+            else
+                position = position + 6;
             ++it;
         }
     }
-    //std::cout << features_info.size() << std::endl;
+    logfile << "number of features after deleting: "<< features_info.size() << std::endl;
 
 }
 
@@ -237,8 +244,7 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
                     Mat mi = (Mat_<double>(3,1) << cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
                     hrl = rotMat.t() * ( (yi.t() - t_wc.t() )*rho + mi );
 
-                    position = position + 6;  ///TODO: check how we can make this prettier; rotation is 0 in the beginning,
-                                                ///gotta change that if we want to test this..
+                    position = position + 6;  ///TODO: check how we can make this prettier
                     Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F);
                     vector<Point3f> coordinates;
                     coordinates.push_back(Point3f(hrl.at<double>(0),hrl.at<double>(1),hrl.at<double>(2) ));
@@ -247,7 +253,7 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 
                 Point2f location(projectedLocation[0]);
 
-                //std::cout << location << std::endl;
+                logfile << " feature " << it - features_info.begin() << " predicted at " << location << std::endl;
 
                 if ( (norm(location - FASTresult) < 20) && (hrl.at<double>(0,3) > 0) ) //should also be in front of camera
                 {
@@ -364,12 +370,12 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 
     //std::cout << x_k_k << std::endl;
     //std::cout << p_k_k << std::endl;
-    logfile << std::endl << "xkk after adding features " << x_k_k << std::endl ;
-    logfile << std::endl << "pkk after adding features " << p_k_k << std::endl;
+    //logfile << std::endl << "xkk after adding features " << x_k_k << std::endl ;
+    //logfile << std::endl << "pkk after adding features " << p_k_k << std::endl;
 
 }
 
-void EKF::dRq_times_a_by_dq(const Mat & quat, const Mat & n, Mat & res)
+void EKF::dRq_times_a_by_dq(const Mat & quat, const Mat & n, Mat & res) //should work now
 {
 
     double q0 = 2*quat.at<double>(0), qx = 2*quat.at<double>(1), qy = 2*quat.at<double>(2), qz = 2*quat.at<double>(3);
@@ -414,7 +420,7 @@ void EKF::mapManagement( Mat & frame )
 
 }
 
-void EKF::convertToCartesian()
+void EKF::convertToCartesian()  //works perfectly now! - i think
 {
     float linearity_index_threshold = 0.1;
 
@@ -447,8 +453,11 @@ void EKF::convertToCartesian()
                           x_k_k.at<double>(position + 2) + midata[2]/rho
                          };
         Mat p = Mat(1,3, CV_64F, pdata).clone();
+        //logfile << std::endl << "feature " << it - features_info.begin() << " location is " << p << std::endl ;
+
 
         float d_c2p = norm(p - x_c2); //this will prolly crash because p is 3 elements and x_c2 only 2 (should be 3 though!)
+        //logfile << "distance " << d_c2p << std::endl;
 
         //parallax
         Mat p1 = p - x_c1;
@@ -457,13 +466,18 @@ void EKF::convertToCartesian()
         Mat cos_alpham = (p1 * p2.t()) / (norm(p1) * norm(p2) );
         float cos_alpha = cos_alpham.at<double>(0,0);
 
+        //logfile << "cos alpha " << cos_alpha << std::endl;
+        //logfile << "old xkk " << x_k_k << std::endl;
+        //logfile << "old pkk " << p_k_k << std::endl;
+
         float linearity_index = 4 * std_d * cos_alpha / d_c2p;
 
         //std::cout << linearity_index << std::endl;
+        //linearity_index = 0.01;
 
         if (linearity_index < linearity_index_threshold)  //convert to cartesion
         {
-            std::cout << " converting feature " << it - features_info.begin() << " to cartesian!" << std::endl;
+            logfile << " converting feature " << it - features_info.begin() << " to cartesian!" << std::endl;
             //change x_k_k
             Mat newx1, newx2;
             int xsize = x_k_k.size().width;
@@ -475,6 +489,9 @@ void EKF::convertToCartesian()
             }
             x_k_k = newx2.clone();
 
+            //logfile << "new xkk " << x_k_k << std::endl;
+
+
             //change p_k_k
             Mat dm_dtheta = (Mat_<double>(3, 1) << cos(phi)*cos(theta), 0, -cos(phi)*sin(theta));
             Mat dm_dphi = (Mat_<double>(3, 1) << -sin(phi)*sin(theta), -cos(phi), -sin(phi)*cos(theta));
@@ -483,13 +500,18 @@ void EKF::convertToCartesian()
             hconcat(J, dm_dphi / rho, J);
             hconcat(J, -mi / (rho * rho), J);
 
-            Mat J_all = Mat::eye(xsize - 3, xsize, CV_64F);
+            Mat J_all = Mat::zeros(xsize - 3, xsize, CV_64F);
             Mat sub = J_all.colRange(position, position + 6).rowRange(position, position + 3);
             J.copyTo(sub);
+            Mat sub2 = J_all.colRange(0, position).rowRange(0, position);
+            Mat eye2 = Mat::eye(position, position, CV_64F);
+            eye2.copyTo(sub2);
+            Mat sub3 = J_all.colRange(position + 6, xsize).rowRange(position + 3, xsize - 3);
+            Mat eye3 = Mat::eye(xsize - position - 6, xsize - position - 6, CV_64F);
+            eye3.copyTo(sub3);
 
-            Mat J_all_t;
-            transpose(J_all, J_all_t);
-            p_k_k = J_all * p_k_k * J_all_t;  //now we should have a smaller p_k_k
+            p_k_k = J_all * p_k_k * J_all.t();  //now we should have a smaller p_k_k
+            //logfile << "new pkk " << p_k_k << std::endl;
 
             it->cartesian = true;
             position = position + 3;
@@ -506,7 +528,7 @@ void EKF::convertToCartesian()
 }
 
 
-Mat EKF::quaternion2rotmatrix(Mat & quat)  //only works on <double> Mat
+Mat EKF::quaternion2rotmatrix(Mat & quat)  //only works on <double> Mat //should work perfectly
 {
     double q1 = quat.at<double>(0);
     double q2 = quat.at<double>(1);
@@ -601,8 +623,8 @@ void EKF::ekfPrediction() //here, fill the m1 copies of p_k_k and x_k_k (the pre
         vconcat(p_k_km1, bottom, p_k_km1); //done!
     }
 
-    logfile << std::endl << "xkkm1 " << x_k_km1 << std::endl;
-    logfile << std::endl << "pkkm1 "<< p_k_km1 << std::endl;
+    // logfile << std::endl << "xkkm1 " << x_k_km1 << std::endl;
+    // logfile << std::endl << "pkkm1 "<< p_k_km1 << std::endl;
 
 }
 
@@ -672,7 +694,7 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
     // (only if they were measured in fact though :-( )
     int position = 13;
     Mat t_wc = x_k_km1.colRange(Range(0, 3));  //t_wc
-    Mat quat = x_k_km1.colRange(Range(3,7));
+    Mat quat = x_k_km1.colRange(Range(3, 7));
     Mat rotMat = quaternion2rotmatrix(quat); //r_wc
 
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
@@ -694,9 +716,9 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
         else
         {
             yi = x_k_km1.colRange(position, position + 3);     //actually, if i remember correctly
-            double rho = x_k_km1.at<double>(0,position + 5);   //this x_k_km1 stuff, the features..
-            double theta = x_k_km1.at<double>(0,position + 3); //are the same as in x_k_k (thus no need to copy?)
-            double phi = x_k_km1.at<double>(0,position + 4);
+            double rho = x_k_km1.at<double>(position + 5);   //this x_k_km1 stuff, the features..
+            double theta = x_k_km1.at<double>(position + 3); //are the same as in x_k_k (thus no need to copy?)
+            double phi = x_k_km1.at<double>(position + 4);
             Mat mi = (Mat_<double>(3,1) << cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
             distvect = (yi.t() - t_wc.t() )*rho + mi;
             hrl = rotMat.t() * distvect;
@@ -720,7 +742,7 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
         Mat location = (Mat_<double>(2,1) << projectedLocation[0].x , projectedLocation[0].y );
 
         //std::cout << location << std::endl;
-        logfile << std::endl << "predicted location " << location << std::endl;
+        logfile <<  "predicted location of feature " << it - features_info.begin() << " : " << location << std::endl;
 
         if ( ( hrl.at<double>(0,3) > 0 ) && (projectedLocation[0].x > 0) && (projectedLocation[0].x < nCols)
                 && (projectedLocation[0].y > 0) && (projectedLocation[0].y < nRows) )
@@ -855,7 +877,14 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
 
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
-        if (it->h.empty()) continue; //apparently, this feature was not predicted
+        logfile << " feature " << it - features_info.begin();
+
+        if (it->h.empty())
+        {
+            logfile << " not predicted" << std::endl;
+            continue; //apparently, this feature was not predicted
+        }
+
 
         Scalar TSS = trace(it->S), DSS = determinant(it->S);
         double TS = TSS.val[0];
@@ -870,7 +899,7 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
         if ((EigS1 > 300) && (EigS2 > 300))
         {
 
-            std::cout << " uncertainty too large: " << EigS1 << " " << EigS2 << std::endl;
+            logfile << " uncertainty too large: " << EigS1 << " " << EigS2 << std::endl;
             continue; //do not search if ellipse is too big
         }
 
@@ -926,7 +955,11 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
             z.copyTo(it->z); //new positions
 
            //std::cout << "match found at " << z << std::endl;
-           logfile << " feature " << it - features_info.begin() << " found at " << z << std::endl;
+           logfile << " found at " << z << std::endl;
+        }
+        else
+        {
+            logfile << " not found" << std::endl;
         }
 
     }
@@ -1156,8 +1189,8 @@ void EKF::updateLIInliers()  //calculate new x_k_k and p_k_k // works as intende
     tmp = Jnorm * pkk5;
     tmp.copyTo(pkk5); //should be done now..
 
-    logfile << "xkk after RANSAC LI update " << x_k_k << std::endl;
-    logfile << "pkk after RANSAC LI update " << p_k_k << std::endl;
+    //logfile << "xkk after RANSAC LI update " << x_k_k << std::endl;
+    //logfile << "pkk after RANSAC LI update " << p_k_k << std::endl;
 
 }
 
@@ -1172,7 +1205,15 @@ void EKF::rescueHIInliers()
 
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
-        if ( (! it->individually_compatible) || it->low_innovation_inlier ) continue;
+        if ( (! it->individually_compatible) || it->low_innovation_inlier )
+        {
+            if (it->cartesian)
+                position = position + 3;
+            else
+                position = position + 6;
+            continue;
+        }
+
 
         Mat hrl;
         Mat yi;
@@ -1191,9 +1232,9 @@ void EKF::rescueHIInliers()
         else
         {
             yi = x_k_k.colRange(position, position + 3);     //actually, if i remember correctly
-            double rho = x_k_k.at<double>(0,position + 5);   //this x_k_km1 stuff, the features..
-            double theta = x_k_k.at<double>(0,position + 3); //are the same as in x_k_k (thus no need to copy?)
-            double phi = x_k_k.at<double>(0,position + 4);
+            double rho = x_k_k.at<double>(position + 5);   //this x_k_km1 stuff, the features..
+            double theta = x_k_k.at<double>(position + 3); //are the same as in x_k_k (thus no need to copy?)
+            double phi = x_k_k.at<double>(position + 4);
             Mat mi = (Mat_<double>(3,1) << cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
             distvect = (yi.t() - t_wc.t() )*rho + mi;
             hrl = rotMat.t() * distvect;
@@ -1404,7 +1445,7 @@ void EKF::visualize(Mat & frameGray, char * fps)
 
     //full disclosure here..
     std::cout << "step " << step << std::endl;
-    std::cout << "xkk " << x_k_k.colRange(Range(0,13)) << std::endl;
+    //std::cout << "xkk " << x_k_k.colRange(Range(0,13)) << std::endl;
 
     Point3d pathpoint(x_k_k.at<double>(0),x_k_k.at<double>(1),x_k_k.at<double>(2));
     path.push_back(pathpoint);
@@ -1440,11 +1481,15 @@ void EKF::visualize(Mat & frameGray, char * fps)
         p.y = it->z.at<double>(1);
         putText(outFrame, "*", p, FONT_HERSHEY_SIMPLEX, 1, color); //put FPS text
 
-        p.x = it->h.at<double>(0);
-        p.y = it->h.at<double>(1);
-        putText(outFrame, "O", p, FONT_HERSHEY_SIMPLEX, 1, Scalar(255,0,0,255)); //put FPS text
+        Point2f p2;
+        p2.x = it->h.at<double>(0);
+        p2.y = it->h.at<double>(1);
+        putText(outFrame, "O", p2, FONT_HERSHEY_SIMPLEX, 1, Scalar(255,0,0,255)); //put FPS text
 
         rectangle(outFrame, it->lastSearchArea, Scalar(255,255,255,255) );
+        line(outFrame, p, p2, Scalar(255,255,255,255));
+
+        //std::cout << "feature " << it - features_info.begin() << " predicted " <<
 
     }
 

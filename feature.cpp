@@ -22,6 +22,10 @@ feature::feature(cv::Point2d & uv, cv::Mat & x1to7, cv::Mat & patch, int step, c
     individually_compatible = false;
 
     //z h H S stay empty
+    //z.release();
+    //h.release();
+    //H.release();
+    //S.release();
     state_size = 6;
     measurement_size = 2;
     R = cv::Mat::eye(2,2, CV_64F);
