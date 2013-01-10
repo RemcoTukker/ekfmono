@@ -17,27 +17,29 @@ int main()
     //this should work but most of the time gives segfaults now (re-install opencv with ffmpeg properly)
     //VideoCapture cap("http://10.10.1.157:8080/videofeed"); // open ip camera
 
-    //VideoCapture cap(1);  //to test with local camera
-
+    //VideoCapture cap(0);  //to test with local camera
     //if(!cap.isOpened())  // check if we succeeded
     //{
     //   cout << "Camera init failed!" << endl;
     //    return -1;
     //}
-
+    //sleep(2);
     //to test with sequence
 
     // get a new frame from camera and store it as first reference point
-    Mat frame;
+    Mat frame, frameBig;
     Mat frameGray, oldGray;
 
     //cap >> frame;
+    //cap >> frameBig;
+    //resize(frameBig, frame, Size(), 0.5, 0.5);
     //cvtColor(frame, frameGray, CV_BGR2GRAY);
+
     string base = "/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput";
     frameGray = imread("/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput0000.pgm",0);
 
-    int width = frameGray.size().width;
-    int height = frameGray.size().height;
+    //int width = frameGray.size().width;
+    //int height = frameGray.size().height;
     frameGray.copyTo(oldGray);
 
     //set some variables for fps count
@@ -45,7 +47,7 @@ int main()
     char fpsbuffer[10];
     time_t previousTime = time(NULL);
 
-    Point2f center(width / 2, height / 2);
+    Point2f center(frameGray.cols / 2, frameGray.rows / 2);
 
     //reasonable settings for a webcam
     // K = [fx 0 cx; 0 fy cy; 0 0 1]
@@ -55,7 +57,7 @@ int main()
 
     //start main loop
     //for(;;)
-    for(int i = 0; i< 200;i++)
+    for(int i = 0; i< 400;i++)
     {
         fps++;
         if (time(NULL) != previousTime)
@@ -75,6 +77,8 @@ int main()
 
         //get a new frame
         //cap >> frame;
+        //cap >> frameBig;
+        //resize(frameBig, frame, Size(), 0.5, 0.5);
         //cvtColor(frame, frameGray, CV_BGR2GRAY);
         char numstr[5]; // enough to hold all numbers up to 64-bits
         sprintf(numstr, "%04d", i);
@@ -97,7 +101,7 @@ int main()
         //imshow("detect", frame);
 
         if(waitKey(30) >= 0) break;
-        //sleep(1);
+        sleep(2);
 
     }
     // the camera will be deinitialized automatically in VideoCapture destructor
