@@ -5,14 +5,14 @@ using namespace cv;
 
 EKF::EKF() //ctor
 {
-    min_number_of_features = 25;
-    max_number_of_features = 50;
+    min_number_of_features = 2;
+    max_number_of_features = 2;
 
     sigma_a = 0.007;
     sigma_alpha = 0.007;
     sigma_image_noise = 1.0;
 
-    double eps = .00000001;
+    double eps = .0000000000001;
 
     //init cam
 
@@ -34,7 +34,8 @@ EKF::EKF() //ctor
     //init state
 
     xkk.setZero(13);
-    xkk << 0,0,0, 1,0,0,0, 0,0,0, eps,eps,eps;
+    //xkk << 0,0,0, 1,0,0,0, 0,0,0, eps,eps,eps;
+    xkk << 1, 2, 3, 0.570563, 0.570563, -0.051482, 0.588443, 0, 0, 0, eps,eps,eps;
     pkk.setZero(13,13);
     pkk.diagonal() << eps, eps, eps, eps, eps, eps, eps, 0.025*0.025, 0.025*0.025, 0.025*0.025, 0.025*0.025, 0.025*0.025, 0.025*0.025;
 
@@ -42,8 +43,8 @@ EKF::EKF() //ctor
 
     step = 1;
 
-    logfile.open ("/dev/null/log.txt");
-    //logfile.open ("log.txt");
+    //logfile.open ("/dev/null/log.txt");
+    logfile.open ("log.txt");
     time_t rawtime;
     time(&rawtime);
     logfile << asctime(localtime(&rawtime));
@@ -175,12 +176,12 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 
         //use cornerSubPix to get better initial estimates
         // Set the needed parameters to find the refined corners
-        Size winSize = Size( 5, 5 );
-        Size zeroZone = Size( -1, -1 );
-        TermCriteria criteria = TermCriteria( CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 20, 0.01 );
+        //Size winSize = Size( 5, 5 );
+        //Size zeroZone = Size( -1, -1 );
+        //TermCriteria criteria = TermCriteria( CV_TERMCRIT_EPS + CV_TERMCRIT_ITER, 20, 0.01 );
 
         // Calculate the refined corner locations
-        cornerSubPix( frame, resultVector, winSize, zeroZone, criteria );
+        //cornerSubPix( frame, resultVector, winSize, zeroZone, criteria );
 
         FASTresult = resultVector[0];
 
@@ -210,12 +211,14 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
             }
             else
             {
-                float rho = xkk(it->position + 5);   //this x_k_km1 stuff, the features..
-                float theta = xkk(it->position + 3); //are the same as in x_k_k (thus no need to copy?)
+                float rho = xkk(it->position + 5);
+                float theta = xkk(it->position + 3);
                 float phi = xkk(it->position + 4);
 
                 Eigen::Vector3f m( cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
+                logfile << std::endl << " feature " << it - features_info.begin() << " m " << m << std::endl;
                 Eigen::Vector3f trans = (y2 - twc) * rho + m;
+                logfile << std::endl << " feature " << it - features_info.begin() << " trans " << trans << std::endl;
                 hrel = q2.inverse() * trans; //is this right? transpose == inverse, right?
 
                 logfile << std::endl << " feature " << it - features_info.begin() << " coordinates (calc from inv depth) " << hrel << std::endl;
@@ -265,7 +268,11 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
         //convert opencv Mat to Eigen Matrix
         Eigen::Map<const Eigen::Matrix<double, 3, 2, Eigen::RowMajor> > dhrldh(dhrl_dh.ptr<double>(0));
 
+        logfile << " h " << h_LR << std::endl;
+        logfile << " q2 " << q2.w() << " " << q2.x() << " " << q2.y() << " " << q2.z() << " " << std::endl;
+        logfile << " q2rot " << q2.toRotationMatrix() << std::endl;
         Eigen::Vector3f n = q2 * Eigen::Vector3f(h_LR.x , h_LR.y, h_LR.z);
+        logfile << " n " << n << std::endl;
         float nx = n(0); float ny = n(1); float nz = n(2);
 
         xkk.conservativeResize(xkk.size() + 6 );
@@ -306,7 +313,7 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
         pkk.bottomLeftCorner(6, psize) = dydxv * pkk.topLeftCorner( 13 , psize );
         pkk.bottomRightCorner<6,6>() = dydxv * pkk.topLeftCorner<13,13>() * dydxv.transpose() + dydhd * Pa * dydhd.transpose();
 
-        //add feature to info vector
+        //add feature to info vector2.0814e-16
         Mat patch = frame.colRange( (int) src[0].x - 20, (int) src[0].x + 21).rowRange( (int) src[0].y - 20, (int) src[0].y + 21) ;
         feature newFeatureInfo(src[0], xkk.head<7>(), patch, step, xkk.tail<6>(), psize );  //heavy lifting is done in constructor
         //NB: Should the first argument be the distorted point (as in matlab code) or the undistorted point? its probably right
@@ -319,15 +326,14 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 
     }
 
-    //logfile << std::endl << "xkk after adding features " << xkk << std::endl ;
-    //logfile << std::endl << "pkk after adding features " << pkk << std::endl;
+    logfile << std::endl << "xkk after adding features " << xkk << std::endl ;
+    logfile << std::endl << "pkk after adding features " << pkk << std::endl;
 
 }
 
 
-void EKF::dRqtimesabydq(const Eigen::Vector4f & quat, const Eigen::Vector3f & n, Eigen::Matrix<float, 3, 4> & res)
+void EKF::dRqtimesabydq(const Eigen::Vector4f & quat, const Eigen::Vector3f & n, Eigen::Matrix<float, 3, 4> & res) //this works
 {
-
     float q0 = 2*quat(0), qx = 2*quat(1), qy = 2*quat(2), qz = 2*quat(3);
     Eigen::Matrix3f dRbydq0;
     dRbydq0 << q0, -qz, qy,   qz, q0, -qx,   -qy, qx, q0 ;
@@ -353,7 +359,7 @@ void EKF::mapManagement( Mat & frame )
 
 }
 
-void EKF::convertToCartesian()  //works perfectly now! - i think
+void EKF::convertToCartesian()
 {
     float linearity_index_threshold = 0.1;
 
@@ -498,8 +504,8 @@ void EKF::ekfPrediction() //here, fill the m1 copies of p_k_k and x_k_k (the pre
     pkkm1.leftCols(13) = pkkm1.leftCols(13) * Fn.transpose();
     pkkm1.topLeftCorner(13,13) += Qn;
 
-    // logfile << std::endl << "xkkm1 " << x_k_km1 << std::endl;
-    // logfile << std::endl << "pkkm1 "<< p_k_km1 << std::endl;
+    logfile << std::endl << "xkkm1 " << xkkm1 << std::endl;
+    logfile << std::endl << "pkkm1 "<< pkkm1 << std::endl;
 
 }
 
@@ -586,16 +592,21 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
             //std::cout << dhu_dhrl << std::endl; //this one is about double //not anymore
             //std::cout << K << std::endl;
 
-            Mat dh_dhrl = jacobians.colRange(3,6);  ///TODO check if i can replace more stuff like this, would be much prettier
+            Mat dh_dhrl = jacobians.colRange(3,6).clone(); //NOTE: the .clone() is important! otherwise the Eigen::Map gets screwed!
+            ///TODO check if i can replace more stuff like this, would be much prettier
+
+            logfile << "dh_dhrl: " << dh_dhrl << std::endl;
 
             Eigen::Map<const Eigen::Matrix<double, 2, 3, Eigen::RowMajor> > dhdhrl(dh_dhrl.ptr<double>(0));
             Eigen::Matrix<float, 3, 4> dgwdqwr;
             Eigen::Vector4f qconj = -q; //conjugate is inverse for quaternions
             qconj(0) = q(0);
             dRqtimesabydq(qconj, trans, dgwdqwr); //can we not do this prettier?
-            Eigen::Matrix4f dqbarbydq;
+
+            Eigen::Matrix4f dqbarbydq = Eigen::Matrix4f::Zero();
             dqbarbydq.diagonal() << 1,-1,-1,-1;
             Eigen::Matrix<float, 2, 4> dhdqwr = dhdhrl.cast<float>() * dgwdqwr * dqbarbydq;  //add some explanation here, what _are_ we doing?
+
             Eigen::Matrix<float, 2, Eigen::Dynamic> Hie(2,pkk.rows());
 
             if (it->cartesian)  //now parametrization specific stuff
@@ -603,7 +614,7 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
 
                 Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * -q2.inverse().toRotationMatrix();
                 Hie << dhdrw, dhdqwr, Eigen::MatrixXf::Zero(2,it->position - 7),
-                dhdhrl.cast<float>() * q2.inverse().toRotationMatrix(), Eigen::MatrixXf::Zero(2, pkk.rows() - it->position - 3);
+                        dhdhrl.cast<float>() * q2.inverse().toRotationMatrix(), Eigen::MatrixXf::Zero(2, pkk.rows() - it->position - 3);
                 //something wrong? dhdrw same as what we calculate and put in middle of Hie ?
             }
             else
@@ -616,9 +627,9 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
 
                 Eigen::Matrix<float, 3, 6> dhrldy;
                 dhrldy << q2.inverse().toRotationMatrix() * lambda ,
-                q2.inverse() * Eigen::Vector3f( cos(phi)*cos(theta), 0, -cos(phi)*sin(theta) ) ,
-                q2.inverse() * Eigen::Vector3f( -sin(phi)*sin(theta), -cos(phi), -sin(phi)*cos(theta) ) ,
-                q2.inverse() * ( y - twc ) ; //strange that rho and mi are not here now.. correct?
+                        q2.inverse() * Eigen::Vector3f( cos(phi)*cos(theta), 0, -cos(phi)*sin(theta) ) ,
+                        q2.inverse() * Eigen::Vector3f( -sin(phi)*sin(theta), -cos(phi), -sin(phi)*cos(theta) ) ,
+                        q2.inverse() * ( y - twc ) ; //strange that rho and mi are not here now.. correct?
 
                 Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * dhrldrw ; //we can move this out of if, just keep the factor -lambda here
 
@@ -629,7 +640,8 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
                 //dhrl_dy finished
             }
 
-            logfile << "H " << Hie << std::endl;
+            logfile << "H " << Hie << std::endl; ///5th column in H screwed up!
+            ///4th column 2nd row of feature maybe off by factor 2, as well as 6th column 2nd row from beginning
             //finally, H calculated
 
             //now also calculate S
@@ -920,11 +932,11 @@ void EKF::updateLIInliers()  //calculate new xkk and pkk // works as intended
     JNorm << x*x+y*y+z*z, -r*x, -r*y, -r*z, -x*r, r*r+y*y+z*z, -x*y, -x*z, -y*r, -y*x, r*r+x*x+z*z, -y*z, -z*r, -z*x, -z*y, r*r+x*x+y*y;
     JNorm /= norm2;
     xkk.segment(3,4) /= norm2;
-    pkk.block(3,0,4, pkk.cols()) = JNorm * pkk.block(3,0,4, pkk.cols());
-    pkk.block(0,3, pkk.rows(), 4) = pkk.block(0,3, pkk.rows(), 4) * JNorm.transpose();
+    pkk.block(3,0,4, pkk.cols()) = JNorm * pkk.block(3,0,4, pkk.cols()); // no aliasing here?
+    pkk.block(0,3, pkk.rows(), 4) = pkk.block(0,3, pkk.rows(), 4) * JNorm.transpose(); //no aliasing here?
 
-    //logfile << "xkk after RANSAC LI update " << x_k_k << std::endl;
-    //logfile << "pkk after RANSAC LI update " << p_k_k << std::endl;
+    logfile << "xkk after RANSAC LI update " << xkk << std::endl;
+    logfile << "pkk after RANSAC LI update " << pkk << std::endl;
 
 }
 
@@ -973,7 +985,7 @@ void EKF::rescueHIInliers()
         it->he = Eigen::Vector2f(projectedLocation[0].x , projectedLocation[0].y );
 
         //also calculate derivative H  ( = dh/dx|predictedstate )   2xn matrix cause h returns x and y coordinates
-        Mat dh_dhrl = jacobians.colRange(3,6);
+        Mat dh_dhrl = jacobians.colRange(3,6).clone();
 
         Eigen::Map<const Eigen::Matrix<double, 2, 3, Eigen::RowMajor> > dhdhrl(dh_dhrl.ptr<double>(0));
 
@@ -981,7 +993,7 @@ void EKF::rescueHIInliers()
         Eigen::Vector4f qconj = -q; //conjugate is inverse for quaternions
         qconj(0) = q(0);
         dRqtimesabydq(qconj, trans, dgwdqwr); //can we not do this prettier?
-        Eigen::Matrix4f dqbarbydq;
+        Eigen::Matrix4f dqbarbydq = Eigen::Matrix4f::Zero();
         dqbarbydq.diagonal() << 1,-1,-1,-1;
         Eigen::Matrix<float, 2, 4> dhdqwr = dhdhrl.cast<float>() * dgwdqwr * dqbarbydq;  //add some explanation here, what _are_ we doing?
 

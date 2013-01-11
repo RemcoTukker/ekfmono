@@ -57,7 +57,7 @@ int main()
 
     //start main loop
     //for(;;)
-    for(int i = 0; i< 400;i++)
+    for(int i = 0; i< 1;i++)
     {
         fps++;
         if (time(NULL) != previousTime)
@@ -101,7 +101,7 @@ int main()
         //imshow("detect", frame);
 
         if(waitKey(30) >= 0) break;
-        sleep(2);
+        //sleep(2);
 
     }
     // the camera will be deinitialized automatically in VideoCapture destructor
