@@ -5,24 +5,26 @@ using namespace cv;
 
 EKF::EKF() //ctor
 {
-    min_number_of_features = 2;
-    max_number_of_features = 2;
+    min_number_of_features = 25;
+    max_number_of_features = 25;
 
     sigma_a = 0.007;
     sigma_alpha = 0.007;
     sigma_image_noise = 1.0;
 
-    double eps = .0000000000001;
+    double eps = 1e-15;
 
     //init cam
 
     //logitech camera
-    //double Kdata[] = {7.2208441300095387e+02, 0, 3.1950000000000000e+02, 0, 7.2208441300095387e+02, 2.3950000000000000e+02, 0, 0, 1}; //for logitech webcam
-    //distCoef = (Mat_<double>(1, 4) << -0.0503375865, 0.1814439, 0, 0, -1.874947); //this is close enough for logitech webcam
+    double Kdata[] = {7.2208441300095387e+02, 0, 3.1950000000000000e+02, 0, 7.2208441300095387e+02, 2.3950000000000000e+02, 0, 0, 1}; //for logitech webcam
+    distCoef = (Mat_<double>(1, 4) << -0.0503375865, 0.1814439, 0, 0, -1.874947); //this is close enough for logitech webcam
+    ///im trying to put 5 numbers in a (1,4) mat?
+    nRows = 480; nCols = 640;
 
     //test sequence: unibrain fire-i
-    distCoef = (Mat_<double>(1, 4) <<  -0.13, -0.06,0,0); //this is close enough for unibrain fire-i (test sequence)
-    double Kdata[] = {2.1735 / 0.0112, 0, 1.7945 / 0.0112,  0, 2.1735 / 0.0112, 1.4433 / 0.0112,  0,0,1}; //for test...
+    //distCoef = (Mat_<double>(1, 4) <<  -0.13, -0.06,0,0); //this is close enough for unibrain fire-i (test sequence)
+    //double Kdata[] = {2.1735 / 0.0112, 0, 1.7945 / 0.0112,  0, 2.1735 / 0.0112, 1.4433 / 0.0112,  0,0,1}; //for test...
 
     //other/old stuff
     //double Kdata[] = {640/(2*tan(60*3.14/360)) ,0, 640/2,  0, 640/(2*tan(60*3.14/360)), 480/2,  0,0,1}; //is this OK? esp. focal lengths..
@@ -34,8 +36,8 @@ EKF::EKF() //ctor
     //init state
 
     xkk.setZero(13);
-    //xkk << 0,0,0, 1,0,0,0, 0,0,0, eps,eps,eps;
-    xkk << 1, 2, 3, 0.570563, 0.570563, -0.051482, 0.588443, 0, 0, 0, eps,eps,eps;
+    xkk << 0,0,0, 1,0,0,0, 0,0,0, eps,eps,eps;
+    //xkk << 1, 2, 3, 0.570563, 0.570563, -0.051482, 0.588443, 0, 0, 0, eps,eps,eps;
     pkk.setZero(13,13);
     pkk.diagonal() << eps, eps, eps, eps, eps, eps, eps, 0.025*0.025, 0.025*0.025, 0.025*0.025, 0.025*0.025, 0.025*0.025, 0.025*0.025;
 
@@ -43,8 +45,8 @@ EKF::EKF() //ctor
 
     step = 1;
 
-    //logfile.open ("/dev/null/log.txt");
-    logfile.open ("log.txt");
+    logfile.open ("/dev/null/log.txt");
+    //logfile.open ("log.txt");
     time_t rawtime;
     time(&rawtime);
     logfile << asctime(localtime(&rawtime));
@@ -73,7 +75,7 @@ void EKF::deleteFeatures() //This function loops over features and removes unrel
         if (rit->cartesian)
         {
             fsize = 3;
-            logfile << "deleting cartesian feature! nr "<< features_info.rend() - rit << std::endl;
+            logfile << "deleting cartesian feature! nr " << features_info.rend() - rit << std::endl;
         }
         else
         {
@@ -85,10 +87,10 @@ void EKF::deleteFeatures() //This function loops over features and removes unrel
         if ((position + fsize) < xkk.size())
         {
             //this should do the trick
-            xkk.segment(position, xkk.size() - position - fsize) = xkk.segment(position + fsize, xkk.size() - position - fsize);
+            xkk.segment(position, xkk.size() - position - fsize) = xkk.segment(position + fsize, xkk.size() - position - fsize).eval();
 
-            pkk.block(0, position, pkk.rows(), pkk.cols() - position - fsize) = pkk.rightCols(pkk.cols() - position - fsize);
-            pkk.block(position, 0, pkk.rows() - position - fsize, pkk.cols()) = pkk.bottomRows(pkk.rows() - position - fsize);
+            pkk.block(0, position, pkk.rows(), pkk.cols() - position - fsize) = pkk.rightCols(pkk.cols() - position - fsize).eval();
+            pkk.block(position, 0, pkk.rows() - position - fsize, pkk.cols()) = pkk.bottomRows(pkk.rows() - position - fsize).eval();
 
         }
 
@@ -124,14 +126,22 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 
         if ( it->predicted ) it->timesPredicted++;
 
-        it->predicted = false;
+        //it->predicted = false;
         it->measured = false; //the same as individually_compatible
         it->high_innovation_inlier = false;
         it->low_innovation_inlier = false;
+        it->keepaway = false; //for adding new features
 
     }
 
     convertToCartesian(); //something goes wrong in here i think...
+
+    //predict locations of old features; if in front of camera, make sure we dont initialize a feature close to it (keepaway bool)
+    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
+    {
+        if (it->updatePrediction(xkk, 1, K, distCoef)) it->keepaway = true;
+    }
+    ///TODO: maybe add features just after searching matches instead, so that we can use the same predicted locations
 
     //start adding new features
     int max_attempts = 50;
@@ -185,144 +195,54 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 
         FASTresult = resultVector[0];
 
-        //check if feature is far enough away from existing features (either same box or minimum distance)
-
-        Eigen::Vector3f twc = xkk.segment(0, 3);   //camera translation in world coordinates
-        Eigen::Vector4f q = xkk.segment(3, 4);     //camera rotation quaternion (r x y z for now)
-        Eigen::Quaternionf q2(q(0),q(1),q(2),q(3)); //Note that we cannot just use q b/c of different order; can we make it prettier?
-
+        //check if feature is far enough away from existing features (minimum distance)
         bool success = true;
 
         for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
         {
-            //we should use projectPoints here instead! (and also use the jacobians that it can calculate somewhere later!)
-
-            //in fact, we may also compare with last measured position in case of slow movements; may be faster
-
-            Eigen::Vector3f hrel;
-            Eigen::Vector3f y2 = xkk.segment(it->position, 3);
-
-            if (it->cartesian)
-            {
-                Eigen::Vector3f trans = y2 - twc;
-                hrel = q2.inverse() * trans;  //feature coordinates relative to camera
-
-                logfile << std::endl << " feature " << it - features_info.begin() << " coordinates (calc from cartesian) " << hrel << std::endl;
-            }
-            else
-            {
-                float rho = xkk(it->position + 5);
-                float theta = xkk(it->position + 3);
-                float phi = xkk(it->position + 4);
-
-                Eigen::Vector3f m( cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
-                logfile << std::endl << " feature " << it - features_info.begin() << " m " << m << std::endl;
-                Eigen::Vector3f trans = (y2 - twc) * rho + m;
-                logfile << std::endl << " feature " << it - features_info.begin() << " trans " << trans << std::endl;
-                hrel = q2.inverse() * trans; //is this right? transpose == inverse, right?
-
-                logfile << std::endl << " feature " << it - features_info.begin() << " coordinates (calc from inv depth) " << hrel << std::endl;
-            }
-
-            Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F); //carefull with changing this, might mess up jacobians?
-            vector<Point2f> projectedLocation;
-            vector<Point3f> coordinates;
-            coordinates.push_back(Point3d(hrel(0),hrel(1),hrel(2) ));
-            projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation);
-            Point2f location(projectedLocation[0]);
-
-            logfile << " feature " << it - features_info.begin() << " predicted at " << location << std::endl;
-
-            if ( (norm(location - FASTresult) < 20) && (hrel(2) > 0) ) //should also be in front of camera
+            if (!it->keepaway) continue;
+            logfile << " feature " << it - features_info.begin() << " predicted at " << it->he << std::endl;
+            if ( (it->he - Eigen::Vector2f(FASTresult.x , FASTresult.y)).norm() < 20 )
             {
                 success = false;
                 break;
             }
-
         }
-        //move projectPoints to before this loop, so that we project each point only once!
 
         if (!success) continue; //lets try again
 
-        //add feature to x_k_k
+        //add feature to info vector
+        Mat patch = frame.colRange( (int) FASTresult.x - 20, (int) FASTresult.x + 21).rowRange(
+                                                        (int) FASTresult.y - 20, (int) FASTresult.y + 21) ;
+        Eigen::Matrix<float, 6, 13> dydxv;
+        Eigen::Matrix<float, 6, 3> dydhd;
+        Eigen::Vector3f n;
 
-        //first undistort
-        vector<Point2f> src;
-        src.push_back( FASTresult );
+        feature newFeatureInfo(FASTresult, xkk.head<7>(), patch, step, xkk.size(), dydxv, dydhd, n, K, distCoef);
+        //heavy lifting is done in constructor
+        //NB: Should the first argument be the distorted point (as in matlab code) or the undistorted point? its probably right
 
-        vector<Point2f> undistorted;
-        undistortPoints(src , undistorted, K , distCoef, Mat(), K);
+        features_info.push_back(newFeatureInfo);
 
-        Point3f h_LR(-(K.at<double>(0,2) - undistorted[0].x) / K.at<double>(0,0),
-                     -(K.at<double>(1,2) - undistorted[0].y) / K.at<double>(1,1), 1); //we can prolly do this at once with undistort
-        ///reproject point to get jacobians
-        Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F); //carefull with changing this, might mess up jacobians?
-        vector<Point2f> projectedLocation;
-        vector<Point3f> coordinates;
-        coordinates.push_back(h_LR);
-        Mat jacobians;
-        projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation, jacobians);
-        Mat dhrl_dh;
-        invert(jacobians.colRange(3,6) , dhrl_dh, cv::DECOMP_SVD); //SVD 'cause default & the others work only on square matrices
-
-        //convert opencv Mat to Eigen Matrix
-        Eigen::Map<const Eigen::Matrix<double, 3, 2, Eigen::RowMajor> > dhrldh(dhrl_dh.ptr<double>(0));
-
-        logfile << " h " << h_LR << std::endl;
-        logfile << " q2 " << q2.w() << " " << q2.x() << " " << q2.y() << " " << q2.z() << " " << std::endl;
-        logfile << " q2rot " << q2.toRotationMatrix() << std::endl;
-        Eigen::Vector3f n = q2 * Eigen::Vector3f(h_LR.x , h_LR.y, h_LR.z);
-        logfile << " n " << n << std::endl;
+        //assemble new xkk
         float nx = n(0); float ny = n(1); float nz = n(2);
 
         xkk.conservativeResize(xkk.size() + 6 );
         xkk.tail<6>() << xkk(0), xkk(1), xkk(2), atan2(nx, nz), atan2(-ny, sqrt(nx*nx + nz*nz) ), 1;
 
-        //add feature to p_k_k
-        Eigen::RowVector3f dthetadgw(nz / (nx*nx + nz*nz), 0, -nx / (nx*nx + nz*nz));
-        Eigen::RowVector3f dphidgw((nx*ny) / ((nx*nx+ny*ny+nz*nz) * sqrt(nx*nx + nz*nz)),
-                                   -sqrt(nx*nx+nz*nz)/(nx*nx+ny*ny+nz*nz), (nz+ny) / ((nx*nx+ny*ny+nz*nz)*sqrt(nx*nx + nz*nz)));
-
-        Eigen::Matrix<float, 3, 4> dgwdqwr;
-        dRqtimesabydq(q, n, dgwdqwr);
-
-        Eigen::Matrix<float, 6, 13> dydxv = Eigen::Matrix<float, 6, 13>::Zero();
-        dydxv.topLeftCorner<3,3>() = Eigen::Matrix3f::Identity();
-        dydxv.block<1,4>(3,3) = dthetadgw * dgwdqwr;
-        dydxv.block<1,4>(4,3) = dphidgw * dgwdqwr;  //first component done!
-
-        Eigen::Matrix<float, 5, 3> dyprimedgw = Eigen::Matrix<float, 5, 3>::Zero();
-        dyprimedgw.row(3) = dthetadgw;
-        dyprimedgw.row(4) = dphidgw;
-
-        Eigen::Matrix<float, 3, 3> dgcdhrl;
-        dgcdhrl << 1/h_LR.x, 0, -h_LR.x/(h_LR.z*h_LR.z), 0, 1/h_LR.y, -h_LR.y/(h_LR.z*h_LR.z), 0, 0, 0;
-
-        Eigen::Matrix<float, 6, 3> dydhd = Eigen::Matrix<float, 6, 3>::Zero();
-        dydhd(5,2) = 1;
-        dydhd.topLeftCorner<5,2>() = dyprimedgw * q2.toRotationMatrix() * dgcdhrl * dhrldh.cast<float>() ;
-        //dgw -> w for world coordinates, dgc -> c for camera coordinates,
-
+        //assemble new pkk
         Eigen::Matrix3f Pa;
         Pa << sigma_image_noise*sigma_image_noise, 0, 0, 0, sigma_image_noise*sigma_image_noise, 0, 0, 0, 1;
 
-        //assemble new p_k_k
         int psize = pkk.cols();
         pkk.conservativeResize(psize + 6, psize + 6); //this may be slower than initializing new matrix..
         pkk.topRightCorner(psize ,6) = pkk.topLeftCorner( psize ,13) * dydxv.transpose();
         pkk.bottomLeftCorner(6, psize) = dydxv * pkk.topLeftCorner( 13 , psize );
         pkk.bottomRightCorner<6,6>() = dydxv * pkk.topLeftCorner<13,13>() * dydxv.transpose() + dydhd * Pa * dydhd.transpose();
 
-        //add feature to info vector2.0814e-16
-        Mat patch = frame.colRange( (int) src[0].x - 20, (int) src[0].x + 21).rowRange( (int) src[0].y - 20, (int) src[0].y + 21) ;
-        feature newFeatureInfo(src[0], xkk.head<7>(), patch, step, xkk.tail<6>(), psize );  //heavy lifting is done in constructor
-        //NB: Should the first argument be the distorted point (as in matlab code) or the undistorted point? its probably right
-
-        features_info.push_back(newFeatureInfo);
-
         initialized++;
 
-        logfile << "added feature at " << FASTresult << " , undistorted "<< undistorted[0] << std::endl;
+        //logfile << "added feature at " << FASTresult << " , undistorted "<< undistorted[0] << std::endl;
 
     }
 
@@ -330,24 +250,6 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
     logfile << std::endl << "pkk after adding features " << pkk << std::endl;
 
 }
-
-
-void EKF::dRqtimesabydq(const Eigen::Vector4f & quat, const Eigen::Vector3f & n, Eigen::Matrix<float, 3, 4> & res) //this works
-{
-    float q0 = 2*quat(0), qx = 2*quat(1), qy = 2*quat(2), qz = 2*quat(3);
-    Eigen::Matrix3f dRbydq0;
-    dRbydq0 << q0, -qz, qy,   qz, q0, -qx,   -qy, qx, q0 ;
-    Eigen::Matrix3f dRbydqx;
-    dRbydqx << qx, qy, qz,   qy, -qx, -q0,   qz, q0, -qx ;
-    Eigen::Matrix3f dRbydqy;
-    dRbydqy << -qy, qx, q0,   qx, qy, qz,   -q0, qz, -qy ;
-    Eigen::Matrix3f dRbydqz;
-    dRbydqz << -qz, -q0, qx,   q0, -qz, qy,   qx, qy, qz ;
-
-    res << dRbydq0 * n, dRbydqx * n, dRbydqy * n, dRbydqz * n;
-
-}
-
 
 void EKF::mapManagement( Mat & frame )
 {
@@ -408,7 +310,7 @@ void EKF::convertToCartesian()
         if ((it->position + 6) < xkk.size())
         {
             //this should do the trick
-            xkk.segment(it->position + 3, xkk.size() - it->position - 6) = xkk.segment(it->position + 6, xkk.size() - it->position - 6);
+            xkk.segment(it->position + 3, xkk.size() - it->position - 6) = xkk.segment(it->position + 6, xkk.size() - it->position - 6).eval();
         }
         xkk.segment(it->position, 3) = p;
         xkk.conservativeResize(xkk.size() - 3);
@@ -450,7 +352,7 @@ void EKF::ekfPrediction() //here, fill the m1 copies of p_k_k and x_k_k (the pre
         q4 = Eigen::Quaternionf(1,0,0,0);
     else
         q4 = Eigen::Quaternionf(cos(theta / 2) , xkk(10) * sin(theta / 2) * delta_t / theta,
-              xkk(11) * sin(theta / 2) * delta_t / theta, xkk(13) * sin(theta / 2) * delta_t / theta);
+              xkk(11) * sin(theta / 2) * delta_t / theta, xkk(12) * sin(theta / 2) * delta_t / theta);
 
     xkkm1 = xkk;
     Eigen::Quaternionf q3(xkk(3) , xkk(4), xkk(5), xkk(6) );
@@ -527,149 +429,30 @@ double EKF::dqA_by_domegaB(double omegaA, double omegaB, double omega, double de
 
 void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedepth works!
 {
-    //predicting location seems to work (not tested with cartesian coordinates yet though)
 
-    //predict feature locations (note, we did this before while adding features!
     //however, we now use EKF prediction to calculate predicted points instead of actual points;
     //thus, it probably wasnt really necessary while adding features, as we can use last measured location there
     // (only if they were measured in fact though :-( )
 
-    Eigen::Vector3f twc = xkk.segment(0, 3);   //camera translation in world coordinates
-    Eigen::Vector4f q = xkk.segment(3, 4);     //camera rotation quaternion (r x y z for now)
-    Eigen::Quaternionf q2(q(0),q(1),q(2),q(3)); //Note that we cannot just use q b/c of different order; can we make it prettier?
-
-    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
-    {
-        Eigen::Vector3f hrel;
-        Eigen::Vector3f trans;
-        Eigen::Vector3f y = xkk.segment(it->position, 3);
-
-        if (it->cartesian)
-        {
-            trans = y - twc;
-            hrel = q2.inverse() * trans;  //feature coordinates relative to camera
-
-            logfile << std::endl << " feature " << it - features_info.begin() << " coordinates (calc from cartesian) " << hrel << std::endl;
-        }
-        else
-        {
-            float rho = xkkm1(it->position + 5);   //this x_k_km1 stuff, the features..
-            float theta = xkkm1(it->position + 3); //are the same as in x_k_k (thus no need to copy?)
-            float phi = xkkm1(it->position + 4);
-
-            Eigen::Vector3f m( cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
-            trans = (y - twc) * rho + m;
-            hrel = q2.inverse() * trans; //is this right? transpose == inverse, right?
-
-            logfile << std::endl << " feature " << it - features_info.begin() << " coordinates (calc from inv depth) " << hrel << std::endl;
-        }
-
-        Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F); //carefull with changing this, might mess up jacobians?
-        vector<Point2d> projectedLocation;
-        vector<Point3d> coordinates;
-        coordinates.push_back(Point3d(hrel(0),hrel(1),hrel(2) ));
-
-        Mat jacobians;
-        projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation, jacobians);
-
-        Mat location = (Mat_<double>(2,1) << projectedLocation[0].x , projectedLocation[0].y );
-
-        //std::cout << location << std::endl;
-        logfile <<  "predicted location of feature " << it - features_info.begin() << " : " << location << std::endl;
-
-        if ( ( hrel(2) > 0 ) && (projectedLocation[0].x > 0) && (projectedLocation[0].x < frame.cols)
-                && (projectedLocation[0].y > 0) && (projectedLocation[0].y < frame.rows) )
-            //should also be in front of camera and within column / row range
-        {
-            //std::cout << " feature " << it - features_info.begin() << " predicted at " << location << std::endl;
-            //std::cout << " feature " << std::endl;
-
-            it->predicted = true;
-            it->he = Eigen::Vector2f(projectedLocation[0].x , projectedLocation[0].y);
-
-            //also calculate derivative H  ( = dh/dx|predictedstate )   2xn matrix cause h returns x and y coordinates
-
-            //std::cout << dhu_dhrl << std::endl; //this one is about double //not anymore
-            //std::cout << K << std::endl;
-
-            Mat dh_dhrl = jacobians.colRange(3,6).clone(); //NOTE: the .clone() is important! otherwise the Eigen::Map gets screwed!
-            ///TODO check if i can replace more stuff like this, would be much prettier
-
-            logfile << "dh_dhrl: " << dh_dhrl << std::endl;
-
-            Eigen::Map<const Eigen::Matrix<double, 2, 3, Eigen::RowMajor> > dhdhrl(dh_dhrl.ptr<double>(0));
-            Eigen::Matrix<float, 3, 4> dgwdqwr;
-            Eigen::Vector4f qconj = -q; //conjugate is inverse for quaternions
-            qconj(0) = q(0);
-            dRqtimesabydq(qconj, trans, dgwdqwr); //can we not do this prettier?
-
-            Eigen::Matrix4f dqbarbydq = Eigen::Matrix4f::Zero();
-            dqbarbydq.diagonal() << 1,-1,-1,-1;
-            Eigen::Matrix<float, 2, 4> dhdqwr = dhdhrl.cast<float>() * dgwdqwr * dqbarbydq;  //add some explanation here, what _are_ we doing?
-
-            Eigen::Matrix<float, 2, Eigen::Dynamic> Hie(2,pkk.rows());
-
-            if (it->cartesian)  //now parametrization specific stuff
-            {
-
-                Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * -q2.inverse().toRotationMatrix();
-                Hie << dhdrw, dhdqwr, Eigen::MatrixXf::Zero(2,it->position - 7),
-                        dhdhrl.cast<float>() * q2.inverse().toRotationMatrix(), Eigen::MatrixXf::Zero(2, pkk.rows() - it->position - 3);
-                //something wrong? dhdrw same as what we calculate and put in middle of Hie ?
-            }
-            else
-            {
-                double lambda = xkkm1(it->position + 5);  //different parametrization here, is that right?
-                double phi = xkkm1(it->position + 4);
-                double theta = xkkm1(it->position + 3);
-
-                Eigen::Matrix3f dhrldrw = q2.inverse().toRotationMatrix() * -lambda;
-
-                Eigen::Matrix<float, 3, 6> dhrldy;
-                dhrldy << q2.inverse().toRotationMatrix() * lambda ,
-                        q2.inverse() * Eigen::Vector3f( cos(phi)*cos(theta), 0, -cos(phi)*sin(theta) ) ,
-                        q2.inverse() * Eigen::Vector3f( -sin(phi)*sin(theta), -cos(phi), -sin(phi)*cos(theta) ) ,
-                        q2.inverse() * ( y - twc ) ; //strange that rho and mi are not here now.. correct?
-
-                Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * dhrldrw ; //we can move this out of if, just keep the factor -lambda here
-
-                Hie << dhdrw, dhdqwr, Eigen::MatrixXf::Zero(2,it->position - 7),
-                        dhdhrl.cast<float>() * dhrldy, Eigen::MatrixXf::Zero(2, pkk.rows() - it->position - 6);
-
-                //logfile << std::endl << dhrl_dy << std::endl;
-                //dhrl_dy finished
-            }
-
-            logfile << "H " << Hie << std::endl; ///5th column in H screwed up!
-            ///4th column 2nd row of feature maybe off by factor 2, as well as 6th column 2nd row from beginning
-            //finally, H calculated
-
-            //now also calculate S
-            it->He = Hie;
-            it->Se = Hie * pkk * Hie.transpose() + it->Re;
-
-            logfile << "S " << it->Se << std::endl;
-
-        }
-
-    }
 
     //warp patches according to predicted motion (predict_features_appearance)
 ///TODO
 
     //Find correspondences in the search regions using normalized cross-correlation
     double correlation_threshold = 0.8;
-    double chi_095_2 = 5.9915;
+    //double chi_095_2 = 5.9915;
 
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
         logfile << " feature " << it - features_info.begin();
 
-        if (!it->predicted)
-        {
-            logfile << " not predicted" << std::endl;
-            continue; //apparently, this feature was not predicted
-        }
+        //predict feature locations and check if it should be visible
+        if (! it->updatePredictionAndDerivatives(xkkm1, K, distCoef) ) continue; //go to next feature if this one is not in front of camera
+        if ( (it->he(0) < -10) || (it->he(0) > frame.cols + 10) || (it->he(1) < -10) || (it->he(1) > frame.rows + 10) ) continue;
+            //go to next feature if this one is not in the frame
+
+        //now also calculate S
+        it->Se = it->He * pkk * it->He.transpose() + it->Re;
 
         double TS = it->Se.trace();
         double DS = it->Se.determinant();
@@ -782,82 +565,43 @@ void EKF::ransacHypotheses()
         Eigen::VectorXf xi = xkkm1 + K1 * (zi - hi ) ;
 
         //compute hypothesis support (using commented method in matlab as "compute hypothesis support fast" is heavy on matlab stuff)
-        //first, use xi for predicting camera measurements (done 2x before using different state vector) and store in h2
-        Eigen::Vector3f twc = xi.segment(0, 3);   //camera translation in world coordinates
-        Eigen::Vector4f q = xi.segment(3, 4);     //camera rotation quaternion (r x y z for now)
-        Eigen::Quaternionf q2(q(0),q(1),q(2),q(3)); //Note that we cannot just use q b/c of different order; can we make it prettier?
-
-        for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
-        {
-            //possible improvement; we dont have to predict all points, only those that have been measured
-            Eigen::Vector3f hrel;
-            Eigen::Vector3f trans;
-            Eigen::Vector3f y = xi.segment(it->position, 3);
-
-            if (it->cartesian)
-            {
-                trans = y - twc;
-                hrel = q2.inverse() * trans;  //feature coordinates relative to camera
-
-                logfile << std::endl << " feature " << it - features_info.begin() << " coordinates (calc from cartesian) " << hrel << std::endl;
-            }
-            else
-            {
-                float rho = xkkm1(it->position + 5);   //this x_k_km1 stuff, the features..
-                float theta = xkkm1(it->position + 3); //are the same as in x_k_k (thus no need to copy?)
-                float phi = xkkm1(it->position + 4);
-
-                Eigen::Vector3f m( cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
-                trans = (y - twc) * rho + m;
-                hrel = q2.inverse() * trans; //is this right? transpose == inverse, right?
-
-                logfile << std::endl << " feature " << it - features_info.begin() << " coordinates (calc from inv depth) " << hrel << std::endl;
-            }
-
-            Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F);
-            vector<Point2d> projectedLocation;
-            vector<Point3d> coordinates;
-            coordinates.push_back(Point3d(hrel(0),hrel(1),hrel(2) ));
-
-            projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation); //project this point
-            //and store it in h2
-            it->h2e = Eigen::Vector2f(projectedLocation[0].x , projectedLocation[0].y);
-
-        }
-
-        //then calculate support for this hypothesis, based on predicted measurements h2 and actual measurements z
+        //based on predicted measurements h2 and actual measurements z
         int hyp_support = 0;
         vector <int> inliers;
         for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
         {
+            //first, use xi for predicting camera measurements if feature was measured,
+            //and store in h2e not to interfere with following 1-point RANSAC hypotheses
             if (!it->measured) continue;
-            if ( (it->ze - it->he).norm() < threshold )
+            it->updatePrediction(xi, 2, K, distCoef);
+
+            if ( (it->ze - it->h2e).norm() < threshold )
             {
                 hyp_support++;
                 inliers.push_back(it - features_info.begin()); //just the index of the feature in the vector
             }
         }
 
-        if (hyp_support <= max_hypothesis_support) continue; //try a new hypothesis
+        if (hyp_support <= max_hypothesis_support) continue; //not good enough, try a new hypothesis
 
-            //std::cout << "new max hypothesis" << std::endl;
-            max_hypothesis_support = hyp_support;
+        //std::cout << "new max hypothesis" << std::endl;
+        max_hypothesis_support = hyp_support;
 
-            //kind if ugly way to "set as most supported hypothesis"
-            for(int j = 0; j < features_info.size(); j++)
-            {
-                features_info[j].low_innovation_inlier = false;
-            }
-            for(int j = 0; j < inliers.size(); j++)
-            {
-                features_info[inliers[j]].low_innovation_inlier = true;
-            }
+        //kind if ugly way to "set as most supported hypothesis"
+        for(int j = 0; j < features_info.size(); j++)
+        {
+            features_info[j].low_innovation_inlier = false;
+        }
+        for(int j = 0; j < inliers.size(); j++)
+        {
+            features_info[inliers[j]].low_innovation_inlier = true;
+        }
 
-            float epsilon = 1-(hyp_support/num_IC_matches);
+        float epsilon = 1-(hyp_support/num_IC_matches);
 
-            //this is what matlab code does; not sure if it is intended though... what is the rationale?
-            if (ceil(log(1-p_at_least_one_spurious_free)/log(1-(1-epsilon))) == 0) //it doesnt always do this. (mostly not, same in Matlab)
-            {
+        //this is what matlab code does; not sure if it is intended though... what is the rationale?
+        if (ceil(log(1-p_at_least_one_spurious_free)/log(1-(1-epsilon))) == 0) //it doesnt always do this. (mostly not, same in Matlab)
+        {
                 /*
                    std::cout << "hypothesis accepted with the following predictions: " << std::endl;
                    for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
@@ -875,8 +619,8 @@ void EKF::ransacHypotheses()
 
                    }*/
 
-                break;
-            }
+            break;
+        }
 
 
     }
@@ -888,6 +632,13 @@ void EKF::updateLIInliers()  //calculate new xkk and pkk // works as intended
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
         if ( it->low_innovation_inlier) inlierCount++;
+    }
+
+    if (inlierCount == 0) //in case we dont have inliers at all (first frames perhaps? does this happen at all?)
+    {
+        xkk = xkkm1;
+        pkk = pkkm1;
+        return;
     }
 
     Eigen::VectorXf hList(inlierCount * 2);
@@ -904,36 +655,23 @@ void EKF::updateLIInliers()  //calculate new xkk and pkk // works as intended
         counter++;
     }
 
-    if (zList.size() == 0) //in case we dont have inliers at all (first frames perhaps? does this happen at all?)
-    {
-        xkk = xkkm1;
-        pkk = pkkm1;
-        return;
-    }
-
     //now do the actual update
     //gain
-    Eigen::MatrixXf S1 = HList * pkkm1 * HList.transpose() + Eigen::MatrixXf::Identity( HList.rows(), HList.rows() );
+    Eigen::MatrixXf S1;
+    S1.noalias() = HList * pkkm1 * HList.transpose() + Eigen::MatrixXf::Identity( HList.rows(), HList.rows() );
     //the filters K is not actually updated here (correct?)
-    Eigen::MatrixXf K2 = pkkm1 * HList.transpose() * S1.inverse();  //assumes aliasing here, not necessary (and line above too)
+    Eigen::MatrixXf K2;
+    K2.noalias() = pkkm1 * HList.transpose() * S1.inverse();  //assumes aliasing here, not necessary (and line above too)
     //this inverse is a shortcut, check if its always OK
     //update state and covariance
-    xkk = xkkm1 + K2 * (zList - hList);
-    pkk = pkkm1 - K2 * S1 * K2.transpose();
-    pkk = 0.5 * pkk + 0.5 * pkk.transpose().eval(); // to solve aliasing issue (which is _not_ assumed here b/c no matmul)
+    xkk.noalias() = xkkm1 + K2 * (zList - hList);
+    pkk.noalias() = pkkm1 - K2 * S1 * K2.transpose();
+    pkk = 0.5 * pkk;
+    pkk += pkk.transpose().eval(); // to solve aliasing issue (which is _not_ assumed here b/c no matmul)
     //commented out in matlab code: p_k_k = ( speye(size(p_km1_k,1)) - K*H )*p_km1_k;  //why is it there?
 
     //normalize quaternion (is it necessary to do this every step?)
-
-    float norm2 = xkk.segment(3,4).norm();
-    float r = xkk(3), x = xkk(4), y = xkk(5), z = xkk(6);
-
-    Eigen::Matrix4f JNorm;
-    JNorm << x*x+y*y+z*z, -r*x, -r*y, -r*z, -x*r, r*r+y*y+z*z, -x*y, -x*z, -y*r, -y*x, r*r+x*x+z*z, -y*z, -z*r, -z*x, -z*y, r*r+x*x+y*y;
-    JNorm /= norm2;
-    xkk.segment(3,4) /= norm2;
-    pkk.block(3,0,4, pkk.cols()) = JNorm * pkk.block(3,0,4, pkk.cols()); // no aliasing here?
-    pkk.block(0,3, pkk.rows(), 4) = pkk.block(0,3, pkk.rows(), 4) * JNorm.transpose(); //no aliasing here?
+    normalizeQuaternion();
 
     logfile << "xkk after RANSAC LI update " << xkk << std::endl;
     logfile << "pkk after RANSAC LI update " << pkk << std::endl;
@@ -942,160 +680,83 @@ void EKF::updateLIInliers()  //calculate new xkk and pkk // works as intended
 
 void EKF::rescueHIInliers()
 {
-    //first the couple from hell: predict_camera_measurements and calculate_derivatives (4th time doing this stuff; put in seperate function)
-    Eigen::Vector3f twc = xkk.segment(0, 3);   //camera translation in world coordinates
-    Eigen::Vector4f q = xkk.segment(3, 4);     //camera rotation quaternion (r x y z for now)
-    Eigen::Quaternionf q2(q(0),q(1),q(2),q(3)); //Note that we cannot just use q b/c of different order; can we make it prettier?
-
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
+        //calculate he and He for potential HI inliers (features that are measured but are not low innovation)
         if ( (! it->measured) || it->low_innovation_inlier ) continue;
-
-        Eigen::Vector3f hrel;
-        Eigen::Vector3f trans;
-        Eigen::Vector3f y = xkk.segment(it->position, 3);
-
-        if (it->cartesian)
-        {
-            trans = y - twc;
-            hrel = q2.inverse() * trans;  //feature coordinates relative to camera
-
-        }
-        else
-        {
-            float rho = xkk(it->position + 5);   //this x_k_km1 stuff, the features..
-            float theta = xkk(it->position + 3); //are the same as in x_k_k (thus no need to copy?)
-            float phi = xkk(it->position + 4);
-
-            Eigen::Vector3f m( cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
-            trans = (y - twc) * rho + m;
-            hrel = q2.inverse() * trans; //is this right? transpose == inverse, right?
-        }
-
-        Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F); //we can use translation as calculated above, and rotation too?
-        vector<Point2d> projectedLocation;
-        vector<Point3d> coordinates;
-        coordinates.push_back(Point3d(hrel(0),hrel(1),hrel(2) ));
-
-        Mat jacobians;
-        projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation, jacobians);
-
-        // ? TODO: probably its important that they also are within column / row range; skipped that so far, so add that after all!
-
-        it->he = Eigen::Vector2f(projectedLocation[0].x , projectedLocation[0].y );
-
-        //also calculate derivative H  ( = dh/dx|predictedstate )   2xn matrix cause h returns x and y coordinates
-        Mat dh_dhrl = jacobians.colRange(3,6).clone();
-
-        Eigen::Map<const Eigen::Matrix<double, 2, 3, Eigen::RowMajor> > dhdhrl(dh_dhrl.ptr<double>(0));
-
-        Eigen::Matrix<float, 3, 4> dgwdqwr;
-        Eigen::Vector4f qconj = -q; //conjugate is inverse for quaternions
-        qconj(0) = q(0);
-        dRqtimesabydq(qconj, trans, dgwdqwr); //can we not do this prettier?
-        Eigen::Matrix4f dqbarbydq = Eigen::Matrix4f::Zero();
-        dqbarbydq.diagonal() << 1,-1,-1,-1;
-        Eigen::Matrix<float, 2, 4> dhdqwr = dhdhrl.cast<float>() * dgwdqwr * dqbarbydq;  //add some explanation here, what _are_ we doing?
-
-        Eigen::Matrix<float, 2, Eigen::Dynamic> Hie(2,pkk.rows());
-
-        if (it->cartesian)  //now parametrization specific stuff
-        {
-
-            Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * -q2.inverse().toRotationMatrix();
-            Hie << dhdrw, dhdqwr, Eigen::MatrixXf::Zero(2,it->position - 7),
-            dhdhrl.cast<float>() * q2.inverse().toRotationMatrix(), Eigen::MatrixXf::Zero(2, pkk.rows() - it->position - 3);
-            //something wrong? dhdrw same as what we calculate and put in middle of Hie ?
-
-        }
-        else
-        {
-            float lambda = xkk(it->position + 5);  //different parametrization here, is that right?
-            float phi = xkk(it->position + 4);
-            float theta = xkk(it->position + 3);
-
-            Eigen::Matrix3f dhrldrw = q2.inverse().toRotationMatrix() * -lambda;
-
-            Eigen::Matrix<float, 3, 6> dhrldy;
-            dhrldy << q2.inverse().toRotationMatrix() * lambda ,
-            q2.inverse() * Eigen::Vector3f( cos(phi)*cos(theta), 0, -cos(phi)*sin(theta) ) ,
-            q2.inverse() * Eigen::Vector3f( -sin(phi)*sin(theta), -cos(phi), -sin(phi)*cos(theta) ) ,
-            q2.inverse() * ( y - twc ) ; //strange that rho and mi are not here now.. correct?
-
-            Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * dhrldrw ; //we can move this out of if, just keep the factor -lambda here
-
-            Hie << dhdrw, dhdqwr, Eigen::MatrixXf::Zero(2,it->position - 7),
-            dhdhrl.cast<float>() * dhrldy, Eigen::MatrixXf::Zero(2, pkk.rows() - it->position - 6);
-
-        }
-
-        it->He = Hie;
-        //finally, H calculated
+        if ( ! it->updatePredictionAndDerivatives(xkk, K, distCoef) ) continue;
+        //this only returns false (and thus continues) if feature is predicted to be not in front of camera; should really not happen
 
         //now check if this feature is in fact a high innovation inlier
         Eigen::Matrix2f Sie = it->He * pkk * it->He.transpose();
         Eigen::Vector2f nuie(it->ze - it->he);
-        float p2 = nuie.transpose() * Sie.inverse() * nuie;
+        float p = nuie.transpose() * Sie.inverse() * nuie;
 
-        if (p2 < 5.9915)
-            it->high_innovation_inlier = true;
-        else
-            it->high_innovation_inlier = false;
+        if (p < 5.9915) it->high_innovation_inlier = true;
+        //else it->high_innovation_inlier = false; //was false already, reset in the beginning of iteration
     }
-
 }
 
 void EKF::updateHIInliers()  //this function is identical to the LI inliers, apart from the if ( ! it->high_innovation_inlier) continue;
 {
-    //NB: and also apart from that this one works on x_k_k and p_k_k instead of x_k_km1 and p_k_km1 !!!
+    //NB: and also apart from that this one works on xkk and pkk instead of xkkm1 and pkkm1 !!!
     //should work as intended!
     //lets just make it one function with a parameter to set if it is low or high innovation inliers that we do...
     int inlierCount = 0;
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
-        if ( ! it->low_innovation_inlier) continue;
+        if ( ! it->high_innovation_inlier) continue;
         inlierCount++;
     }
 
+    //in case we dont have high innovation inliers at all
+    if (inlierCount == 0) return;   //do nothing!
+
     Eigen::VectorXf hList(inlierCount * 2);
     Eigen::VectorXf zList(inlierCount * 2);
-    Eigen::MatrixXf HList(inlierCount * 2, pkkm1.rows() );
+    Eigen::MatrixXf HList(inlierCount * 2, pkk.rows() );
 
     int counter = 0;
     for(std::vector<feature>::iterator it = features_info.begin(); it != features_info.end(); ++it)
     {
-        if ( ! it->low_innovation_inlier) continue;
+        if ( ! it->high_innovation_inlier) continue;
 
-        HList.block(counter * 2, 0, 2, pkkm1.rows()) = it->He;
+        HList.block(counter * 2, 0, 2, pkk.rows()) = it->He;
         hList.segment(counter * 2, 2) = it->he;
         zList.segment(counter * 2, 2) = it->ze;
         counter++;
     }
 
-    //in case we dont have high innovation inliers at all
-    if (zList.size() == 0) return;   //do nothing!
-
     //now do the actual update
 
-    Eigen::MatrixXf S1 = HList * pkkm1 * HList.transpose() + Eigen::MatrixXf::Identity( HList.rows(), HList.rows() );
-    Eigen::MatrixXf K2 = pkkm1 * HList.transpose() * S1.inverse();  //assumes aliasing here, not necessary (and line above too)
+    Eigen::MatrixXf S1;
+    S1.noalias() = HList * pkk * HList.transpose() + Eigen::MatrixXf::Identity( HList.rows(), HList.rows() );
+    Eigen::MatrixXf K2;
+    K2.noalias() = pkk * HList.transpose() * S1.inverse();
     //this inverse is a shortcut, check if its always OK
-    xkk = xkkm1 + K2 * (zList - hList);
-    pkk = pkkm1 - K2 * S1 * K2.transpose();
+    xkk.noalias() = xkk + K2 * (zList - hList);
+    pkk.noalias() = pkk - K2 * S1 * K2.transpose();
     pkk = 0.5 * pkk + 0.5 * pkk.transpose().eval(); // to solve aliasing issue (which is _not_ assumed here b/c no matmul)
     //commented out in matlab code:  p_k_k = ( speye(size(p_km1_k,1)) - K*H )*p_km1_k;  //why is it there?
 
+    normalizeQuaternion();
+}
+
+void EKF::normalizeQuaternion()
+{
     //normalize quaternion (is it necessary to do this every step?) (twice in every step even?)
-    float r = xkk(3), x = xkk(4), y = xkk(5), z = xkk(6);
     float norm2 = xkk.segment(3,4).norm();
+    float r = xkk(3), x = xkk(4), y = xkk(5), z = xkk(6);
+
     Eigen::Matrix4f JNorm;
     JNorm << x*x+y*y+z*z, -r*x, -r*y, -r*z, -x*r, r*r+y*y+z*z, -x*y, -x*z, -y*r, -y*x, r*r+x*x+z*z, -y*z, -z*r, -z*x, -z*y, r*r+x*x+y*y;
     JNorm /= norm2;
     xkk.segment(3,4) /= norm2;
-    pkk.block(3,0,4, pkk.cols()) = JNorm * pkk.block(3,0,4, pkk.cols());
+    pkk.block(3,0,4, pkk.cols()) = JNorm * pkk.block(3,0,4, pkk.cols()); // no aliasing here because of matmul
     pkk.block(0,3, pkk.rows(), 4) = pkk.block(0,3, pkk.rows(), 4) * JNorm.transpose();
 
 }
+
 
 void EKF::visualize(Mat & frameGray, char * fps)
 {

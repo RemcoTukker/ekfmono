@@ -11,29 +11,59 @@
 using namespace std;
 using namespace cv;
 
+ //test for code in feature
+int main()
+{
+    Mat distCoef = (Mat_<double>(1, 4) <<  -0.13, -0.06,0,0); //this is close enough for unibrain fire-i (test sequence)
+    double Kdata[] = {2.1735 / 0.0112, 0, 1.7945 / 0.0112,  0, 2.1735 / 0.0112, 1.4433 / 0.0112,  0,0,1};
+    int nRows = 240; int nCols = 320;
+
+    Mat K = Mat(3,3,CV_64F, Kdata).clone();
+    Eigen::VectorXf xkk;
+    xkk.setZero(13);
+    double eps = 1e-15;
+    xkk << 1, 2, 3, 0.570563, 0.570563, -0.051482, 0.588443, 0, 0, 0, eps,eps,eps;
+
+    Eigen::Matrix<float, 6, 13> dydxv;
+     Eigen::Matrix<float, 6, 3> dydhd;
+      Eigen::Vector3f n;
+
+    //Point2f point(46,116);
+    Point2f point(147, 170);
+
+    feature test(point, xkk, K, 0, 13, dydxv, dydhd, n, K, distCoef );
+
+    std::cout << dydxv << std::endl;
+    std::cout << dydhd << std::endl;
+    std::cout << n << std::endl;
+
+}
+
+/*
+
 int main()
 {
 
     //this should work but most of the time gives segfaults now (re-install opencv with ffmpeg properly)
     //VideoCapture cap("http://10.10.1.157:8080/videofeed"); // open ip camera
 
-    //VideoCapture cap(0);  //to test with local camera
-    //if(!cap.isOpened())  // check if we succeeded
-    //{
-    //   cout << "Camera init failed!" << endl;
-    //    return -1;
-    //}
-    //sleep(2);
+    VideoCapture cap(1);  //to test with local camera
+    if(!cap.isOpened())  // check if we succeeded
+    {
+       cout << "Camera init failed!" << endl;
+        return -1;
+    }
+    sleep(2);
     //to test with sequence
 
     // get a new frame from camera and store it as first reference point
     Mat frame, frameBig;
     Mat frameGray, oldGray;
 
-    //cap >> frame;
+    cap >> frame;
     //cap >> frameBig;
     //resize(frameBig, frame, Size(), 0.5, 0.5);
-    //cvtColor(frame, frameGray, CV_BGR2GRAY);
+    cvtColor(frame, frameGray, CV_BGR2GRAY);
 
     string base = "/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput";
     frameGray = imread("/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput0000.pgm",0);
@@ -56,8 +86,8 @@ int main()
     EKF filter;
 
     //start main loop
-    //for(;;)
-    for(int i = 0; i< 1;i++)
+    for(;;)
+    //for(int i = 0; i< 1;i++)
     {
         fps++;
         if (time(NULL) != previousTime)
@@ -76,14 +106,14 @@ int main()
         swap(frameGray, oldGray); // swap previous frame to oldGray to make place for new frame
 
         //get a new frame
-        //cap >> frame;
+        cap >> frame;
         //cap >> frameBig;
         //resize(frameBig, frame, Size(), 0.5, 0.5);
-        //cvtColor(frame, frameGray, CV_BGR2GRAY);
-        char numstr[5]; // enough to hold all numbers up to 64-bits
-        sprintf(numstr, "%04d", i);
-        string result = base + numstr + ".pgm";
-        frameGray = imread(result,0);
+        cvtColor(frame, frameGray, CV_BGR2GRAY);
+        //char numstr[5]; // enough to hold all numbers up to 64-bits
+        //sprintf(numstr, "%04d", i);
+        //string result = base + numstr + ".pgm";
+        //frameGray = imread(result,0);
 
         filter.searchICmatches(frameGray);
         filter.ransacHypotheses();
@@ -111,4 +141,4 @@ int main()
     return 0;
 }
 
-
+*/

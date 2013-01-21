@@ -7,8 +7,14 @@
 class feature
 {
     public:
-        feature(cv::Point2f& uv, const Eigen::VectorXf& x1to7, cv::Mat& patch, int step, const Eigen::VectorXf& newFeature, int positioninfilter);
+        feature(cv::Point2f& uv, const Eigen::VectorXf& x1to7, cv::Mat& patch, int step, int positioninfilter,
+                Eigen::Matrix<float, 6, 13>& dydxv, Eigen::Matrix<float, 6, 3>& dydhd, Eigen::Vector3f& n,
+                cv::Mat& K , cv::Mat& distCoef);
         ~feature();
+
+        bool updatePrediction(Eigen::VectorXf & xkkp, int store, cv::Mat& K , cv::Mat& distCoef);
+        bool updatePredictionAndDerivatives(Eigen::VectorXf & xkkp, cv::Mat& K , cv::Mat& distCoef); //returns true if in front of camera
+        void dRqtimesabydq(const Eigen::Vector4f & quat, const Eigen::Vector3f & n, Eigen::Matrix<float, 3, 4> & res);
 
         cv::Mat patch_when_initialized;
         cv::Mat patch_when_matching;
@@ -23,6 +29,7 @@ class feature
         bool predicted;
         int timesPredicted;
         bool measured;
+        bool keepaway;
         int timesMeasured;
         int init_frame;
         cv::Point2d init_measurement; //same as uv_when_initialized? (only one is column vector, other one is row vector in matlab)
