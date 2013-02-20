@@ -53,7 +53,7 @@ feature::feature(Point2f& uv, const Eigen::VectorXf& x1to7, Mat& patch, int step
 
     Point3f h_LR(undistorted[0].x, undistorted[0].y, 1);
 
-    std::cout << "h_LR " << h_LR << std::endl;
+    //std::cout << "h_LR " << h_LR << std::endl;
 
     //reproject point to get jacobians
     Mat tvec = Mat::zeros(1,3,CV_64F), rvec = Mat::zeros(1,3,CV_64F); //carefull with changing this, might mess up jacobians?
@@ -64,16 +64,11 @@ feature::feature(Point2f& uv, const Eigen::VectorXf& x1to7, Mat& patch, int step
     projectPoints( coordinates, rvec, tvec, K, distCoef, projectedLocation, jacobians);
     Mat dhrl_dh;
 
-    std::cout << "dhdhrl " <<jacobians.colRange(3,6)<< std::endl;
+    Mat dh_dhrl = jacobians.colRange(3,6).clone();
+    Eigen::Map<const Eigen::Matrix<double, 2, 3, Eigen::RowMajor> > dhdhrldouble(dh_dhrl.ptr<double>(0));
+    Eigen::Matrix<float, 2, 3> dhdhrl = dhdhrldouble.cast<float>();
 
-    invert(jacobians.colRange(3,6) , dhrl_dh, cv::DECOMP_SVD); //SVD 'cause default & the others work only on square matrices
-
-    std::cout << "dhrl_dh " << dhrl_dh << std::endl;
-
-    //convert opencv Mat to Eigen Matrix
-    Eigen::Map<const Eigen::Matrix<double, 3, 2, Eigen::RowMajor> > dhrldh(dhrl_dh.ptr<double>(0));
-
-    std::cout << "dhrldh " << dhrldh << std::endl; //its fine
+    //std::cout << "dhdhrl " <<jacobians.colRange(3,6)<< std::endl;
 
     Eigen::Vector4f q = x1to7.segment(3, 4);     //camera rotation quaternion (r x y z for now)
     Eigen::Quaternionf q2(q(0),q(1),q(2),q(3)); //Note that we cannot just use q b/c of different order; can we make it prettier?
@@ -86,13 +81,13 @@ feature::feature(Point2f& uv, const Eigen::VectorXf& x1to7, Mat& patch, int step
     Eigen::RowVector3f dphidgw((nx*ny) / ((nx*nx+ny*ny+nz*nz) * sqrt(nx*nx + nz*nz)),
                                -sqrt(nx*nx+nz*nz)/(nx*nx+ny*ny+nz*nz), (nz*ny) / ((nx*nx+ny*ny+nz*nz)*sqrt(nx*nx + nz*nz)));
 
-    std::cout << "dthetadgw " << dthetadgw << std::endl;
-    std::cout << "dphidgw " << dphidgw << std::endl;
+    //std::cout << "dthetadgw " << dthetadgw << std::endl;
+    //std::cout << "dphidgw " << dphidgw << std::endl;
 
     Eigen::Matrix<float, 3, 4> dgwdqwr;
     dRqtimesabydq(q, hLR, dgwdqwr);
 
-    std::cout << "dgwdqwr " << dgwdqwr << std::endl;
+    //std::cout << "dgwdqwr " << dgwdqwr << std::endl;
 
     dydxv = Eigen::Matrix<float, 6, 13>::Zero();
     dydxv.topLeftCorner<3,3>() = Eigen::Matrix3f::Identity();
@@ -103,18 +98,20 @@ feature::feature(Point2f& uv, const Eigen::VectorXf& x1to7, Mat& patch, int step
     dyprimedgw.row(3) = dthetadgw;
     dyprimedgw.row(4) = dphidgw;
 
-    std::cout << "dyprimedgw " << dyprimedgw << std::endl;
-    std::cout << "dgwdgc " <<  q2.toRotationMatrix() << std::endl;
-
-    ///dgcdhrl * dhrldh.cast<float>() is off unfortunately, doesnt match with matlab;
-    ///maybe we can ignore it for now, as it is small; get to the bottom of it sometime though
     Eigen::Matrix<float, 3, 3> dgcdhrl;
     //dgcdhrl << 1/h_LR.x, 0, -h_LR.x/(h_LR.z*h_LR.z), 0, 1/h_LR.y, -h_LR.y/(h_LR.z*h_LR.z), 0, 0, 0;
-    dgcdhrl << 1/nx, 0, -nx/(nz*nz), 0, 1/ny, -ny/(nz*nz), 0, 0, 0;
+    float theta = atan2(nx, nz);
+    float phi = atan2(-ny, sqrt(nx*nx + nz*nz) );
+    Eigen::Vector3f mi(cos(phi)*sin(theta), -sin(phi), cos(phi)*cos(theta));
+    Eigen::Vector3f hc = q2.inverse() * mi;
+    float hx = hc(0); float hy = hc(1); float hz = hc(2);
+
+    dgcdhrl << 1/hz, 0, -hx/(hz*hz), 0, 1/hz, -hy/(hz*hz), 0, 0, 0;
+    Eigen::Matrix<float, 3, 2> dhdhrlrightinverse = dhdhrl.transpose() * ( dhdhrl * dhdhrl.transpose() ).inverse();
 
     dydhd = Eigen::Matrix<float, 6, 3>::Zero();
     dydhd(5,2) = 1;
-    dydhd.topLeftCorner<5,2>() = dyprimedgw * q2.toRotationMatrix() * dgcdhrl * dhrldh.cast<float>() ; //dydhd done!
+    dydhd.topLeftCorner<5,2>() = dyprimedgw * q2.toRotationMatrix() * dgcdhrl * dhdhrlrightinverse ; //dydhd done!
     //dgw -> w for world coordinates, dgc -> c for camera coordinates,
 
 }
@@ -130,7 +127,6 @@ bool feature::updatePrediction(Eigen::VectorXf & xkkp, int store , Mat& K , Mat&
     Eigen::Vector4f q = xkkp.segment(3, 4);     //camera rotation quaternion (r x y z for now)
     Eigen::Quaternionf q2(q(0),q(1),q(2),q(3)); //Note that we cannot just use q b/c of different order; can we make it prettier?
 
-
     Eigen::Vector3f hrel;
     Eigen::Vector3f trans;
     Eigen::Vector3f y = xkkp.segment(position, 3);
@@ -144,8 +140,8 @@ bool feature::updatePrediction(Eigen::VectorXf & xkkp, int store , Mat& K , Mat&
     else
     {
         float rho = xkkp(position + 5);   //this x_k_km1 stuff, the features..
-        float theta = xkkp(position + 3); //are the same as in x_k_k (thus no need to copy?)
         float phi = xkkp(position + 4);
+        float theta = xkkp(position + 3); //are the same as in x_k_k (thus no need to copy?)
 
         Eigen::Vector3f m( cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
         trans = (y - twc) * rho + m;
@@ -194,8 +190,8 @@ bool feature::updatePredictionAndDerivatives(Eigen::VectorXf & xkkp, Mat& K , Ma
     else
     {
         float rho = xkkp(position + 5);   //this x_k_km1 stuff, the features..
-        float theta = xkkp(position + 3); //are the same as in x_k_k (thus no need to copy?)
         float phi = xkkp(position + 4);
+        float theta = xkkp(position + 3); //are the same as in x_k_k (thus no need to copy?)
 
         Eigen::Vector3f m( cos(phi) * sin(theta), -sin(phi), cos(phi) * cos(theta) );
         trans = (y - twc) * rho + m;
@@ -227,48 +223,39 @@ bool feature::updatePredictionAndDerivatives(Eigen::VectorXf & xkkp, Mat& K , Ma
     dqbarbydq.diagonal() << 1,-1,-1,-1;
     Eigen::Matrix<float, 2, 4> dhdqwr = dhdhrl.cast<float>() * dgwdqwr * dqbarbydq;  //add some explanation here, what _are_ we doing?
 
+    //std::cout << "dhrldqwr: " << dgwdqwr * dqbarbydq << std::endl;
+
     Eigen::Matrix<float, 2, Eigen::Dynamic> Hie(2,xkkp.rows());
+
+    Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * -q2.inverse().toRotationMatrix();
 
     if (cartesian)  //now parametrization specific stuff
     {
-
-        Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * -q2.inverse().toRotationMatrix();
         Hie << dhdrw, dhdqwr, Eigen::MatrixXf::Zero(2,position - 7),
         dhdhrl.cast<float>() * q2.inverse().toRotationMatrix(), Eigen::MatrixXf::Zero(2, xkkp.rows() - position - 3);
-        //something wrong? dhdrw same as what we calculate and put in middle of Hie ?
-
+        ///something wrong? dhdrw same as what we calculate and put in middle of Hie ?
     }
     else
     {
-        float lambda = xkkp(position + 5);  //different parametrization here, is that right?
+        float lambda = xkkp(position + 5);  //different parametrization here, nasty
         float phi = xkkp(position + 4);
         float theta = xkkp(position + 3);
-
-        Eigen::Matrix3f dhrldrw = q2.inverse().toRotationMatrix() * -lambda;
 
         Eigen::Matrix<float, 3, 6> dhrldy;
         dhrldy << q2.inverse().toRotationMatrix() * lambda ,
         q2.inverse() * Eigen::Vector3f( cos(phi)*cos(theta), 0, -cos(phi)*sin(theta) ) ,
         q2.inverse() * Eigen::Vector3f( -sin(phi)*sin(theta), -cos(phi), -sin(phi)*cos(theta) ) ,
-        q2.inverse() * ( y - twc ) ; //strange that rho and mi are not here now.. correct?
+        q2.inverse() * ( y - twc ) ; //strange that rho and mi are not here now.. Same as in matlab code, but correct?
 
-        Eigen::Matrix<float, 2, 3> dhdrw = dhdhrl.cast<float>() * dhrldrw ; //we can move this out of if, just keep the factor -lambda here
-
-        Hie << dhdrw, dhdqwr, Eigen::MatrixXf::Zero(2,position - 7),
+        Hie << dhdrw * lambda, dhdqwr, Eigen::MatrixXf::Zero(2,position - 7),
         dhdhrl.cast<float>() * dhrldy, Eigen::MatrixXf::Zero(2, xkkp.rows() - position - 6);
-
     }
 
     He = Hie;
 
-    ///5th column in H screwed up!
-    ///4th column 2nd row of feature maybe off by factor 2, as well as 6th column 2nd row from beginning
-
     return true; //feature is in front of camera and everything is calculated
 }
 
-//this is a copy from EKF class! fix this, use it only once...
-//just like K and distCoef, the only place where it is used in EKF is in addFeature code. Bah!
 void feature::dRqtimesabydq(const Eigen::Vector4f & quat, const Eigen::Vector3f & n, Eigen::Matrix<float, 3, 4> & res) //this works
 {
     float q0 = 2*quat(0), qx = 2*quat(1), qy = 2*quat(2), qz = 2*quat(3);

@@ -5,8 +5,8 @@ using namespace cv;
 
 EKF::EKF() //ctor
 {
-    min_number_of_features = 25;
-    max_number_of_features = 25;
+    min_number_of_features = 15;
+    max_number_of_features = 15;
 
     sigma_a = 0.007;
     sigma_alpha = 0.007;
@@ -19,8 +19,6 @@ EKF::EKF() //ctor
     //logitech camera
     double Kdata[] = {7.2208441300095387e+02, 0, 3.1950000000000000e+02, 0, 7.2208441300095387e+02, 2.3950000000000000e+02, 0, 0, 1}; //for logitech webcam
     distCoef = (Mat_<double>(1, 4) << -0.0503375865, 0.1814439, 0, 0, -1.874947); //this is close enough for logitech webcam
-    ///im trying to put 5 numbers in a (1,4) mat?
-    nRows = 480; nCols = 640;
 
     //test sequence: unibrain fire-i
     //distCoef = (Mat_<double>(1, 4) <<  -0.13, -0.06,0,0); //this is close enough for unibrain fire-i (test sequence)
@@ -126,7 +124,7 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 
         if ( it->predicted ) it->timesPredicted++;
 
-        //it->predicted = false;
+        it->predicted = false;
         it->measured = false; //the same as individually_compatible
         it->high_innovation_inlier = false;
         it->low_innovation_inlier = false;
@@ -229,6 +227,7 @@ void EKF::addAndUpdateFeatures(Mat & frame) //works fine in first timestep
 
         xkk.conservativeResize(xkk.size() + 6 );
         xkk.tail<6>() << xkk(0), xkk(1), xkk(2), atan2(nx, nz), atan2(-ny, sqrt(nx*nx + nz*nz) ), 1;
+        ///retreive this from feature constructor instead of n, as this is already calculated there
 
         //assemble new pkk
         Eigen::Matrix3f Pa;
@@ -342,7 +341,7 @@ void EKF::convertToCartesian()
 }
 
 void EKF::ekfPrediction() //here, fill the m1 copies of p_k_k and x_k_k (the predictions)  //works perfectly now
-{
+{ ///prolly something wrong here..
 
     float delta_t = 1;
     //camera motion prediction (constant velocity model for now)
@@ -450,6 +449,8 @@ void EKF::searchICmatches(Mat & frame)   //calculating derivatives of inversedep
         if (! it->updatePredictionAndDerivatives(xkkm1, K, distCoef) ) continue; //go to next feature if this one is not in front of camera
         if ( (it->he(0) < -10) || (it->he(0) > frame.cols + 10) || (it->he(1) < -10) || (it->he(1) > frame.rows + 10) ) continue;
             //go to next feature if this one is not in the frame
+
+        it->predicted = true;
 
         //now also calculate S
         it->Se = it->He * pkk * it->He.transpose() + it->Re;

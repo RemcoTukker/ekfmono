@@ -10,7 +10,7 @@
 
 using namespace std;
 using namespace cv;
-
+/*
  //test for code in feature
 int main()
 {
@@ -33,40 +33,54 @@ int main()
 
     feature test(point, xkk, K, 0, 13, dydxv, dydhd, n, K, distCoef );
 
+    float nx = n(0); float ny = n(1); float nz = n(2);
+
+        xkk.conservativeResize(xkk.size() + 6 );
+        xkk.tail<6>() << xkk(0), xkk(1), xkk(2), atan2(nx, nz), atan2(-ny, sqrt(nx*nx + nz*nz) ), 1;
+
     std::cout << dydxv << std::endl;
     std::cout << dydhd << std::endl;
     std::cout << n << std::endl;
 
-}
+    std::cout << "feature added" << std::endl;
 
-/*
+     std::cout << test.he << std::endl;
+
+    test.updatePredictionAndDerivatives(xkk , K, distCoef);
+
+    std::cout << test.he << std::endl;
+    std::cout << test.He << std::endl;
+
+}
+*/
+
 
 int main()
 {
 
+   // get a new frame from camera and store it as first reference point
+    Mat frame;
+    Mat frameGray, oldGray;
+
     //this should work but most of the time gives segfaults now (re-install opencv with ffmpeg properly)
     //VideoCapture cap("http://10.10.1.157:8080/videofeed"); // open ip camera
 
-    VideoCapture cap(1);  //to test with local camera
+    VideoCapture cap(0);  //to test with local camera
     if(!cap.isOpened())  // check if we succeeded
     {
        cout << "Camera init failed!" << endl;
         return -1;
     }
-    sleep(2);
-    //to test with sequence
-
-    // get a new frame from camera and store it as first reference point
-    Mat frame, frameBig;
-    Mat frameGray, oldGray;
+    sleep(2); //camera is a bit slow to start streaming...
 
     cap >> frame;
-    //cap >> frameBig;
-    //resize(frameBig, frame, Size(), 0.5, 0.5);
     cvtColor(frame, frameGray, CV_BGR2GRAY);
 
-    string base = "/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput";
-    frameGray = imread("/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput0000.pgm",0);
+
+    //to test with sequence
+
+    //string base = "/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput";
+    //frameGray = imread("/home/remco/SLAM/ekfmonoslam/trunk/sequences/ic/rawoutput0000.pgm",0);
 
     //int width = frameGray.size().width;
     //int height = frameGray.size().height;
@@ -87,7 +101,7 @@ int main()
 
     //start main loop
     for(;;)
-    //for(int i = 0; i< 1;i++)
+    //for(int i = 0; i< 500;i++)
     {
         fps++;
         if (time(NULL) != previousTime)
@@ -107,8 +121,6 @@ int main()
 
         //get a new frame
         cap >> frame;
-        //cap >> frameBig;
-        //resize(frameBig, frame, Size(), 0.5, 0.5);
         cvtColor(frame, frameGray, CV_BGR2GRAY);
         //char numstr[5]; // enough to hold all numbers up to 64-bits
         //sprintf(numstr, "%04d", i);
@@ -141,4 +153,4 @@ int main()
     return 0;
 }
 
-*/
+
